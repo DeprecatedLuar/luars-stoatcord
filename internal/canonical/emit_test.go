@@ -76,6 +76,49 @@ func TestMessage_ToStoat_BuildsMasquerade(t *testing.T) {
 	}
 }
 
+func TestChannel_ToStoat_TranslatesTypeAndOverwrites(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	c := Channel{
+		ID:   "c1",
+		Name: "general",
+		Type: ChannelTypeVoice,
+		Overwrites: map[string]Overwrite{
+			"role-1": {Allow: []Permission{PermViewChannel}, Deny: []Permission{PermSendMessages}},
+		},
+	}
+
+	got := c.ToStoat(logger)
+
+	if got.Name != "general" {
+		t.Errorf("Name = %q, want general", got.Name)
+	}
+	if got.Type != "Voice" {
+		t.Errorf("Type = %q, want Voice", got.Type)
+	}
+	ow, ok := got.Overwrites["role-1"]
+	if !ok {
+		t.Fatalf("Overwrites missing role-1: %+v", got.Overwrites)
+	}
+	wantAllow := uint64(1) << 20
+	wantDeny := uint64(1) << 22
+	if ow.Allow != wantAllow || ow.Deny != wantDeny {
+		t.Errorf("Overwrites[role-1] = %+v, want Allow=%d Deny=%d", ow, wantAllow, wantDeny)
+	}
+}
+
+func TestChannel_ToStoat_TextType(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	c := Channel{ID: "c1", Name: "general", Type: ChannelTypeText}
+
+	got := c.ToStoat(logger)
+
+	if got.Type != "Text" {
+		t.Errorf("Type = %q, want Text", got.Type)
+	}
+}
+
 func TestCategory_CanonicalJSON_PreservesChannelOrder(t *testing.T) {
 	c := Category{ID: "cat-1", Name: "General", ChannelIDs: []string{"c3", "c1", "c2"}}
 
@@ -87,5 +130,22 @@ func TestCategory_CanonicalJSON_PreservesChannelOrder(t *testing.T) {
 	const want = `{"id":"cat-1","name":"General","channel_ids":["c3","c1","c2"]}`
 	if string(got) != want {
 		t.Errorf("CanonicalJSON() = %s, want %s", got, want)
+	}
+}
+
+func TestParseCategoryCanonicalJSON_RoundTripsCanonicalJSON(t *testing.T) {
+	c := Category{ID: "cat-1", Name: "General", ChannelIDs: []string{"c3", "c1", "c2"}}
+
+	data, err := c.CanonicalJSON()
+	if err != nil {
+		t.Fatalf("CanonicalJSON() error: %v", err)
+	}
+
+	got, err := ParseCategoryCanonicalJSON(data)
+	if err != nil {
+		t.Fatalf("ParseCategoryCanonicalJSON() error: %v", err)
+	}
+	if got.ID != c.ID || got.Name != c.Name || len(got.ChannelIDs) != 3 || got.ChannelIDs[0] != "c3" {
+		t.Fatalf("got %+v, want fields matching %+v", got, c)
 	}
 }

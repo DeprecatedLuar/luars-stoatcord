@@ -50,17 +50,24 @@ func New(mappings MappingStore, health HealthChecker, queue QueueStore, limiter 
 }
 
 // Submit is the single public door: callers never see the internal
-// per-channel or dependency-waiter maps. Message ops route to their
-// channel's serialized worker; everything else takes the general
-// dependency-resolver path, run in its own goroutine so structure ops
-// proceed in parallel (spec 5).
+// per-key worker or dependency-waiter maps. Every op routes to a
+// serialized worker keyed by workerKey: message ops share a worker per
+// channel (send-order = display-order, spec 5); every other op shares a
+// worker per entity, so a create and its own follow-up edit/delete for the
+// same Discord id can never race each other into using an unconfirmed
+// mapping. Different entities still get their own workers and proceed in
+// parallel.
 func (e *Engine) Submit(op Op) {
 	e.wg.Add(1)
+	e.workerFor(workerKey(op)) <- op
+}
+
+// workerKey picks the serialization key for an op (see Submit).
+func workerKey(op Op) string {
 	if op.EntityType == EntityMessage && op.ChannelID != "" {
-		e.channelWorkerFor(op.ChannelID) <- op
-		return
+		return "message:" + op.ChannelID
 	}
-	go e.tryRun(op)
+	return string(op.EntityType) + ":" + op.DiscordID
 }
 
 // Wait blocks until every submitted op (including any currently deferred on
@@ -70,16 +77,16 @@ func (e *Engine) Wait() {
 	e.wg.Wait()
 }
 
-func (e *Engine) channelWorkerFor(channelID string) chan Op {
+func (e *Engine) workerFor(key string) chan Op {
 	e.workersMu.Lock()
 	defer e.workersMu.Unlock()
 
-	ch, ok := e.workers[channelID]
+	ch, ok := e.workers[key]
 	if ok {
 		return ch
 	}
 	ch = make(chan Op, channelWorkerBuffer)
-	e.workers[channelID] = ch
+	e.workers[key] = ch
 	go func() {
 		for op := range ch {
 			e.tryRun(op)
@@ -134,7 +141,7 @@ func (e *Engine) notifyWaiters(entityType EntityType, discordID string) {
 	e.waitersMu.Unlock()
 
 	for _, op := range waiting {
-		go e.tryRun(op)
+		e.workerFor(workerKey(op)) <- op
 	}
 }
 

@@ -54,3 +54,75 @@ func (c Channel) CanonicalJSON() ([]byte, error) {
 		Overwrites: overwrites,
 	})
 }
+
+// ParseChannelCanonicalJSON reverses Channel.CanonicalJSON, so a stored
+// canonical_state row can be rebuilt into a Channel for the engine's Diff
+// step (guardrail: diff translates both the desired state and the stored
+// snapshot to Stoat-shape at compare time, so the stored snapshot must be
+// parseable back to canonical first).
+func ParseChannelCanonicalJSON(data []byte) (Channel, error) {
+	var cj channelJSON
+	if err := json.Unmarshal(data, &cj); err != nil {
+		return Channel{}, err
+	}
+
+	overwrites := make(map[string]Overwrite, len(cj.Overwrites))
+	for roleID, ow := range cj.Overwrites {
+		overwrites[roleID] = Overwrite{Allow: ow.Allow, Deny: ow.Deny}
+	}
+
+	return Channel{
+		ID:         cj.ID,
+		Name:       cj.Name,
+		Type:       cj.Type,
+		CategoryID: cj.CategoryID,
+		Position:   cj.Position,
+		Overwrites: overwrites,
+	}, nil
+}
+
+// roleJSON is Role's deterministic canonical_state shape.
+type roleJSON struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Colour      string        `json:"colour"`
+	Hoist       bool          `json:"hoist"`
+	Rank        int           `json:"rank"`
+	Permissions overwriteJSON `json:"permissions"`
+}
+
+// CanonicalJSON serializes the role with sorted allow/deny permission lists,
+// so equal states always produce byte-identical output regardless of slice
+// order.
+func (r Role) CanonicalJSON() ([]byte, error) {
+	return json.Marshal(roleJSON{
+		ID:          r.ID,
+		Name:        r.Name,
+		Colour:      r.Colour,
+		Hoist:       r.Hoist,
+		Rank:        r.Rank,
+		Permissions: r.Permissions.canonicalize(),
+	})
+}
+
+// ParseRoleCanonicalJSON reverses Role.CanonicalJSON (same purpose as
+// ParseChannelCanonicalJSON: rebuild a stored canonical_state row for the
+// engine's Diff step).
+func ParseRoleCanonicalJSON(data []byte) (Role, error) {
+	var rj roleJSON
+	if err := json.Unmarshal(data, &rj); err != nil {
+		return Role{}, err
+	}
+
+	return Role{
+		ID:     rj.ID,
+		Name:   rj.Name,
+		Colour: rj.Colour,
+		Hoist:  rj.Hoist,
+		Rank:   rj.Rank,
+		Permissions: Overwrite{
+			Allow: rj.Permissions.Allow,
+			Deny:  rj.Permissions.Deny,
+		},
+	}, nil
+}

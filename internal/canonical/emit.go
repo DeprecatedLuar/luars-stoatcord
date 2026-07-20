@@ -26,6 +26,37 @@ func (r Role) ToStoat(logger *slog.Logger) StoatRole {
 	}
 }
 
+// stoatChannelTypes maps the canonical (already-flattened, spec 6) channel
+// type to Stoat's wire-shaped type string.
+var stoatChannelTypes = map[ChannelType]string{
+	ChannelTypeText:  "Text",
+	ChannelTypeVoice: "Voice",
+}
+
+// StoatChannel is Stoat's wire-shaped channel. Overwrites is keyed by
+// canonical role id, same as Channel.Overwrites.
+type StoatChannel struct {
+	Name       string
+	Type       string
+	Overwrites map[string]StoatOverwrite
+}
+
+// ToStoat translates a canonical channel to Stoat's wire shape, logging any
+// dropped permissions in its overwrites (spec 4). Category membership and
+// position are not translated here -- they live on Category.ChannelIDs
+// (spec 6), never on the channel itself.
+func (c Channel) ToStoat(logger *slog.Logger) StoatChannel {
+	overwrites := make(map[string]StoatOverwrite, len(c.Overwrites))
+	for roleID, ow := range c.Overwrites {
+		overwrites[roleID] = ow.ToStoat(logger)
+	}
+	return StoatChannel{
+		Name:       c.Name,
+		Type:       stoatChannelTypes[c.Type],
+		Overwrites: overwrites,
+	}
+}
+
 // StoatEmoji is Stoat's wire-shaped custom emoji.
 type StoatEmoji struct {
 	Name     string
@@ -99,4 +130,15 @@ type categoryJSON struct {
 // ChannelIDs is never sorted -- its order is meaningful sidebar position.
 func (c Category) CanonicalJSON() ([]byte, error) {
 	return json.Marshal(categoryJSON{ID: c.ID, Name: c.Name, ChannelIDs: c.ChannelIDs})
+}
+
+// ParseCategoryCanonicalJSON reverses Category.CanonicalJSON (same purpose
+// as ParseChannelCanonicalJSON: rebuild a stored canonical_state row for the
+// engine's Diff step).
+func ParseCategoryCanonicalJSON(data []byte) (Category, error) {
+	var cj categoryJSON
+	if err := json.Unmarshal(data, &cj); err != nil {
+		return Category{}, err
+	}
+	return Category{ID: cj.ID, Name: cj.Name, ChannelIDs: cj.ChannelIDs}, nil
 }

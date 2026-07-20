@@ -10,20 +10,28 @@ import (
 
 const appDirName = "stoatcord"
 
+// defaultStoatAPIBase is the official Revolt/Stoat REST endpoint, used when
+// STOAT_API_BASE is unset -- this instance's REST API is served here even
+// though its gateway is the non-official wss://events.stoat.chat (see
+// internal/stoat gap 1).
+const defaultStoatAPIBase = "https://api.revolt.chat"
+
 // Config holds the credentials and target identifiers stoatcord needs to run.
 type Config struct {
 	DiscordToken  string
 	StoatToken    string
 	DiscordGuild  string
 	StoatServerID string
+	StoatAPIBase  string
 	LogLevel      string
 }
 
 const (
 	envDiscordToken  = "STOATCORD_DISCORD_TOKEN"
 	envStoatToken    = "STOATCORD_STOAT_TOKEN"
-	envDiscordGuild  = "STOATCORD_DISCORD_GUILD_ID"
-	envStoatServerID = "STOATCORD_STOAT_SERVER_ID"
+	envDiscordGuild  = "DISCORD_SERVER_ID"
+	envStoatServerID = "STOAT_SERVER_ID"
+	envStoatAPIBase  = "STOAT_API_BASE"
 	envLogLevel      = "LOG_LEVEL"
 )
 
@@ -43,7 +51,11 @@ func Load(envFile string) (*Config, error) {
 		StoatToken:    os.Getenv(envStoatToken),
 		DiscordGuild:  os.Getenv(envDiscordGuild),
 		StoatServerID: os.Getenv(envStoatServerID),
+		StoatAPIBase:  os.Getenv(envStoatAPIBase),
 		LogLevel:      os.Getenv(envLogLevel),
+	}
+	if cfg.StoatAPIBase == "" {
+		cfg.StoatAPIBase = defaultStoatAPIBase
 	}
 
 	var missing []string

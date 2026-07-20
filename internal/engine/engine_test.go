@@ -525,3 +525,101 @@ func TestRunRemote_GivesUpAfterMaxRetries(t *testing.T) {
 		t.Fatal("expected op to remain unconfirmed after exhausting retries")
 	}
 }
+
+// TestSubmit_SameEntityOpsAreSerialized guards against the race that caused
+// a live 404: a channel's own create and a follow-up edit ran concurrently,
+// so the edit read the create's still-pending mapping row (Found=true,
+// StoatID="") and sent Stoat a request with an empty channel id. Ops for
+// the same entity must fully serialize regardless of entity type.
+func TestSubmit_SameEntityOpsAreSerialized(t *testing.T) {
+	mappings := newFakeMappingStore()
+	health := &fakeHealthChecker{ok: true}
+	queue := &fakeQueueStore{}
+	e := newTestEngine(mappings, health, queue)
+
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+
+	create := Op{
+		Kind:       OpCreate,
+		EntityType: EntityChannel,
+		DiscordID:  "chan-1",
+		Apply: func(ctx context.Context) (string, error) {
+			close(createStarted)
+			<-releaseCreate
+			mu.Lock()
+			order = append(order, "create")
+			mu.Unlock()
+			return "stoat-chan-1", nil
+		},
+	}
+	edit := Op{
+		Kind:       OpUpdate,
+		EntityType: EntityChannel,
+		DiscordID:  "chan-1",
+		Apply: func(ctx context.Context) (string, error) {
+			mu.Lock()
+			order = append(order, "edit")
+			mu.Unlock()
+			return "stoat-chan-1", nil
+		},
+	}
+
+	e.Submit(create)
+	<-createStarted // create's worker has picked it up and is mid-flight
+	e.Submit(edit)
+	close(releaseCreate)
+	e.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "create" || order[1] != "edit" {
+		t.Fatalf("expected create to fully apply before edit started, got %v", order)
+	}
+}
+
+// TestSubmit_DifferentEntitiesStillRunInParallel guards against
+// accidentally over-serializing: only same-entity ops should share a
+// worker. Two different channels' ops must not head-of-line block.
+func TestSubmit_DifferentEntitiesStillRunInParallel(t *testing.T) {
+	mappings := newFakeMappingStore()
+	health := &fakeHealthChecker{ok: true}
+	queue := &fakeQueueStore{}
+	e := newTestEngine(mappings, health, queue)
+
+	blockA := make(chan struct{})
+	appliedB := make(chan struct{})
+
+	opA := Op{
+		Kind:       OpCreate,
+		EntityType: EntityChannel,
+		DiscordID:  "chan-a",
+		Apply: func(ctx context.Context) (string, error) {
+			<-blockA
+			return "stoat-a", nil
+		},
+	}
+	opB := Op{
+		Kind:       OpCreate,
+		EntityType: EntityChannel,
+		DiscordID:  "chan-b",
+		Apply: func(ctx context.Context) (string, error) {
+			close(appliedB)
+			return "stoat-b", nil
+		},
+	}
+
+	e.Submit(opA)
+	e.Submit(opB)
+
+	select {
+	case <-appliedB:
+	case <-time.After(time.Second):
+		t.Fatal("chan-b's op was head-of-line blocked behind chan-a's still-blocked op")
+	}
+
+	close(blockA)
+	e.Wait()
+}

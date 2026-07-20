@@ -57,8 +57,8 @@ func TestLoad_AllRequiredFields_Succeeds(t *testing.T) {
 	path := writeEnvFile(t, dir, `
 STOATCORD_DISCORD_TOKEN=d-token
 STOATCORD_STOAT_TOKEN=s-token
-STOATCORD_DISCORD_GUILD_ID=guild-1
-STOATCORD_STOAT_SERVER_ID=server-1
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
 `)
 
 	cfg, err := Load(path)
@@ -84,8 +84,8 @@ func TestLoad_RealEnvOverridesEnvFile(t *testing.T) {
 	path := writeEnvFile(t, dir, `
 STOATCORD_DISCORD_TOKEN=file-token
 STOATCORD_STOAT_TOKEN=s-token
-STOATCORD_DISCORD_GUILD_ID=guild-1
-STOATCORD_STOAT_SERVER_ID=server-1
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
 `)
 
 	t.Setenv("STOATCORD_DISCORD_TOKEN", "env-token")
@@ -104,8 +104,8 @@ func TestLoad_LogLevel_OptionalDefaultsEmpty(t *testing.T) {
 	path := writeEnvFile(t, dir, `
 STOATCORD_DISCORD_TOKEN=d-token
 STOATCORD_STOAT_TOKEN=s-token
-STOATCORD_DISCORD_GUILD_ID=guild-1
-STOATCORD_STOAT_SERVER_ID=server-1
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
 `)
 
 	cfg, err := Load(path)
@@ -122,8 +122,8 @@ func TestLoad_LogLevel_ReadFromEnv(t *testing.T) {
 	path := writeEnvFile(t, dir, `
 STOATCORD_DISCORD_TOKEN=d-token
 STOATCORD_STOAT_TOKEN=s-token
-STOATCORD_DISCORD_GUILD_ID=guild-1
-STOATCORD_STOAT_SERVER_ID=server-1
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
 LOG_LEVEL=debug
 `)
 
@@ -136,11 +136,48 @@ LOG_LEVEL=debug
 	}
 }
 
+func TestLoad_StoatAPIBase_DefaultsWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := writeEnvFile(t, dir, `
+STOATCORD_DISCORD_TOKEN=d-token
+STOATCORD_STOAT_TOKEN=s-token
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.StoatAPIBase != "https://api.revolt.chat" {
+		t.Errorf("StoatAPIBase = %q, want default https://api.revolt.chat", cfg.StoatAPIBase)
+	}
+}
+
+func TestLoad_StoatAPIBase_ReadFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := writeEnvFile(t, dir, `
+STOATCORD_DISCORD_TOKEN=d-token
+STOATCORD_STOAT_TOKEN=s-token
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
+STOAT_API_BASE=https://custom.example.com
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.StoatAPIBase != "https://custom.example.com" {
+		t.Errorf("StoatAPIBase = %q, want https://custom.example.com", cfg.StoatAPIBase)
+	}
+}
+
 func TestLoad_MissingEnvFile_FallsBackToRealEnv(t *testing.T) {
 	t.Setenv("STOATCORD_DISCORD_TOKEN", "env-token")
 	t.Setenv("STOATCORD_STOAT_TOKEN", "env-stoat-token")
-	t.Setenv("STOATCORD_DISCORD_GUILD_ID", "env-guild")
-	t.Setenv("STOATCORD_STOAT_SERVER_ID", "env-server")
+	t.Setenv("DISCORD_SERVER_ID", "env-guild")
+	t.Setenv("STOAT_SERVER_ID", "env-server")
 
 	cfg, err := Load("/nonexistent/path/.env")
 	if err != nil {
