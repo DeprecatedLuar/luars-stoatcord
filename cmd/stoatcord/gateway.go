@@ -77,7 +77,7 @@ func submitCategoryOps(s *discordgo.Session, guildID, stoatServerID string, mapp
 	cats := categoriesFromState(s, guildID, logger)
 	snapshot := func() []canonical.Category { return cats }
 	for _, cat := range cats {
-		eng.Submit(discord.BuildCategoryOp(engine.OpUpdate, cat, snapshot, stoatServerID, mappings, writer))
+		eng.Submit(discord.BuildCategoryOp(engine.OpUpdate, cat, snapshot, stoatServerID, mappings, writer, logger))
 	}
 }
 
@@ -92,10 +92,12 @@ func categoriesFromState(s *discordgo.Session, guildID string, logger *slog.Logg
 	}
 
 	names := map[string]string{}
+	positions := map[string]int{}
 	members := map[string][]*discordgo.Channel{}
 	for _, ch := range guild.Channels {
 		if ch.Type == discordgo.ChannelTypeGuildCategory {
 			names[ch.ID] = ch.Name
+			positions[ch.ID] = ch.Position
 		}
 	}
 	for _, ch := range guild.Channels {
@@ -121,14 +123,10 @@ func categoriesFromState(s *discordgo.Session, guildID string, logger *slog.Logg
 		}
 		cats = append(cats, canonical.Category{ID: id, Name: name, ChannelIDs: channelIDs})
 	}
+	// Sort by the category channel's own Discord Position, not by ID, so
+	// Stoat's category order matches the Discord sidebar order.
 	slices.SortFunc(cats, func(a, b canonical.Category) int {
-		if a.ID < b.ID {
-			return -1
-		}
-		if a.ID > b.ID {
-			return 1
-		}
-		return 0
+		return positions[a.ID] - positions[b.ID]
 	})
 	return cats
 }

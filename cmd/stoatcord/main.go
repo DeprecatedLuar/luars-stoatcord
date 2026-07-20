@@ -117,6 +117,21 @@ func main() {
 	stoatClient.Connect(ctx, health.stoatGateway)
 	logger.Info("stoat gateway connecting", "ws_url", stoatClient.WSURL())
 
+	if err := waitForGuildReady(ctx, discordSession, cfg.DiscordGuild, guildReadyTimeout); err != nil {
+		logger.Error("timed out waiting for discord guild state", "error", err)
+		os.Exit(1)
+	}
+	if err := waitForStoatHealthy(ctx, health.stoatGateway, stoatHealthyTimeout); err != nil {
+		logger.Error("timed out waiting for stoat gateway", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("running startup structure reconcile")
+	if err := runStartupReconcile(ctx, discordSession, cfg.DiscordGuild, cfg.StoatServerID, mappings, stoatClient, mappings, stoatClient, eng, logger); err != nil {
+		logger.Error("startup reconcile failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("startup structure reconcile complete")
+
 	<-ctx.Done()
 	logger.Info("shutting down")
 

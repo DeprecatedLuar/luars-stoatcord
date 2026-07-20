@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"log/slog"
 	"reflect"
 
 	"github.com/luar/stoatcord/internal/canonical"
@@ -23,7 +24,7 @@ type CategoryWriter interface {
 // Discord category id used directly: Stoat's ServerCategory.Id is
 // client-chosen, not server-generated, so no create round-trip is needed to
 // learn it.
-func BuildCategoryOp(kind engine.OpKind, cat canonical.Category, allCategories func() []canonical.Category, stoatServerID string, mappings MappingReader, writer CategoryWriter) engine.Op {
+func BuildCategoryOp(kind engine.OpKind, cat canonical.Category, allCategories func() []canonical.Category, stoatServerID string, mappings MappingReader, writer CategoryWriter, logger *slog.Logger) engine.Op {
 	canonicalState, _ := cat.CanonicalJSON()
 
 	dependsOn := make([]engine.DependencyKey, 0, len(cat.ChannelIDs))
@@ -47,7 +48,7 @@ func BuildCategoryOp(kind engine.OpKind, cat canonical.Category, allCategories f
 		Apply: func(ctx context.Context) (string, error) {
 			resolved := make([]canonical.Category, 0, len(allCategories()))
 			for _, c := range allCategories() {
-				stoatChannelIDs, err := resolveChannelIDs(c.ChannelIDs, mappings)
+				stoatChannelIDs, err := resolveChannelIDs(c.ChannelIDs, mappings, logger)
 				if err != nil {
 					return "", err
 				}
@@ -64,9 +65,11 @@ func BuildCategoryOp(kind engine.OpKind, cat canonical.Category, allCategories f
 
 // resolveChannelIDs translates Discord channel ids to their mapped Stoat
 // channel ids, preserving order (display position, spec 6). A channel
-// missing from the mapping table is skipped defensively -- DependsOn should
-// already have gated the op until every member channel is mapped.
-func resolveChannelIDs(discordChannelIDs []string, mappings MappingReader) ([]string, error) {
+// missing from the mapping table is skipped -- DependsOn should already
+// have gated the op until every member channel is mapped, so this should
+// only ever fire on a transient pending row; logged (WARN) rather than
+// silent so a partial category list is visible, never a silent loss.
+func resolveChannelIDs(discordChannelIDs []string, mappings MappingReader, logger *slog.Logger) ([]string, error) {
 	resolved := make([]string, 0, len(discordChannelIDs))
 	for _, channelID := range discordChannelIDs {
 		m, err := mappings.Get(string(engine.EntityChannel), channelID)
@@ -80,6 +83,7 @@ func resolveChannelIDs(discordChannelIDs []string, mappings MappingReader) ([]st
 		// list, so other categories' still-pending channels can reach
 		// here too; skip them the same as unmapped ones.
 		if !m.Found || m.Status != engine.StatusActive {
+			logger.Warn("discord: category resend skipping unmapped/pending channel", "channel_id", channelID)
 			continue
 		}
 		resolved = append(resolved, m.StoatID)

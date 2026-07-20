@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -31,7 +32,8 @@ func TestBuildCategoryOp_ApplyResendsWholeListWithResolvedChannelIDs(t *testing.
 	writer := &fakeCategoryWriter{}
 	allCategories := func() []canonical.Category { return []canonical.Category{general, voice} }
 
-	op := BuildCategoryOp(engine.OpUpdate, general, allCategories, "srv1", mappings, writer)
+	var buf bytes.Buffer
+	op := BuildCategoryOp(engine.OpUpdate, general, allCategories, "srv1", mappings, writer, newTestLogger(&buf))
 
 	if len(op.DependsOn) != 2 {
 		t.Fatalf("DependsOn = %+v, want 2 entries", op.DependsOn)
@@ -72,7 +74,8 @@ func TestBuildCategoryOp_ApplySkipsPendingChannelsInOtherCategories(t *testing.T
 	writer := &fakeCategoryWriter{}
 	allCategories := func() []canonical.Category { return []canonical.Category{general, voice} }
 
-	op := BuildCategoryOp(engine.OpUpdate, general, allCategories, "srv1", mappings, writer)
+	var buf bytes.Buffer
+	op := BuildCategoryOp(engine.OpUpdate, general, allCategories, "srv1", mappings, writer, newTestLogger(&buf))
 
 	if _, err := op.Apply(context.Background()); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -87,7 +90,8 @@ func TestBuildCategoryOp_ApplySkipsPendingChannelsInOtherCategories(t *testing.T
 
 func TestBuildCategoryOp_DiffComparesNameAndChannelOrder(t *testing.T) {
 	cat := canonical.Category{ID: "cat1", Name: "General", ChannelIDs: []string{"chan1", "chan2"}}
-	op := BuildCategoryOp(engine.OpUpdate, cat, func() []canonical.Category { return nil }, "srv1", newFakeMappingReader(), &fakeCategoryWriter{})
+	var buf bytes.Buffer
+	op := BuildCategoryOp(engine.OpUpdate, cat, func() []canonical.Category { return nil }, "srv1", newFakeMappingReader(), &fakeCategoryWriter{}, newTestLogger(&buf))
 
 	sameJSON, err := cat.CanonicalJSON()
 	if err != nil {
