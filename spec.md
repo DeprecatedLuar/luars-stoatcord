@@ -79,7 +79,7 @@ Blob-per-channel (rather than a separate per-(channel,role) table) is chosen del
 
 The canonical permission set is the **union of Discord's set**, with each entry mapped to its Stoat equivalent or explicitly marked as a drop.
 
-> ⚠️ **Verify before implementation.** The Stoat-side bit names below are from the Revolt/Stoat permission model and must be reconciled against the current Stoat `Permission` enum in the live API before coding. Treat this table as the structure, not the final authority on exact names.
+> Reconciled against the live Stoat `Permission` enum (`crates/core/permissions/src/models/channel.rs`, `stoatchat/stoatchat`) in Phase 0. All names below are confirmed exact.
 
 | Canonical | Discord | Stoat | Notes |
 |---|---|---|---|
@@ -91,6 +91,7 @@ The canonical permission set is the **union of Discord's set**, with each entry 
 | `ATTACH_FILES` | Attach Files | `UploadFiles` | |
 | `ADD_REACTIONS` | Add Reactions | `React` | |
 | `MANAGE_CHANNEL` | Manage Channels | `ManageChannel` | |
+| `MANAGE_SERVER` | Manage Server | `ManageServer` | |
 | `MANAGE_ROLES` | Manage Roles/Permissions | `ManagePermissions` | |
 | `CREATE_INVITE` | Create Invite | `InviteOthers` | |
 | `CONNECT` | Connect (voice) | `Connect` | |
@@ -105,7 +106,8 @@ The canonical permission set is the **union of Discord's set**, with each entry 
 | `KICK_MEMBERS` | Kick Members | `KickMembers` | |
 | `BAN_MEMBERS` | Ban Members | `BanMembers` | |
 | `TIMEOUT_MEMBERS` | Timeout Members | `TimeoutMembers` | |
-| `MENTION_EVERYONE` | Mention @everyone | — | **DROP** — no Stoat equivalent |
+| `MENTION_EVERYONE` | Mention @everyone | `MentionEveryone` | |
+| `VIEW_AUDIT_LOG` | View Audit Log | `ViewAuditLogs` | |
 | `USE_APP_COMMANDS` | Use Application Commands | — | **DROP** |
 | `PRIORITY_SPEAKER` | Priority Speaker | — | **DROP** |
 | `SEND_TTS` | Send TTS Messages | — | **DROP** |
