@@ -14,9 +14,11 @@ import (
 	"golang.org/x/term"
 
 	"github.com/luar/stoatcord/internal/config"
+	"github.com/luar/stoatcord/internal/discord"
 	"github.com/luar/stoatcord/internal/engine"
 	"github.com/luar/stoatcord/internal/lock"
 	logging "github.com/luar/stoatcord/internal/log"
+	"github.com/luar/stoatcord/internal/reconcile"
 	"github.com/luar/stoatcord/internal/stoat"
 	"github.com/luar/stoatcord/internal/store"
 )
@@ -37,6 +39,19 @@ const (
 	// never confirms (a stuck remote failure, a stale pending mapping row)
 	// would otherwise block eng.Wait() forever and wedge SIGTERM/SIGINT.
 	shutdownDrainTimeout = 10 * time.Second
+
+	// guildReadyTimeout bounds how long startup waits for the mirrored
+	// guild's own GUILD_CREATE event. discordSession.Open() returns on
+	// READY, before per-guild data arrives -- reading the state cache
+	// before this yields empty categories/channels/roles.
+	guildReadyTimeout = 30 * time.Second
+
+	// stoatHealthyTimeout bounds how long startup waits for the Stoat
+	// gateway to report healthy before running the converge pass.
+	// Converging before Stoat is healthy would just enqueue every op to
+	// op_queue instead of applying (engine's health gate), which is safe
+	// but pointless on a normal fresh start.
+	stoatHealthyTimeout = 30 * time.Second
 )
 
 func main() {
@@ -116,12 +131,16 @@ func main() {
 	discordSession.Identify.Intents = discordgo.IntentsGuilds
 
 	mappings := mappingStoreAdapter{st}
-	health := &compositeHealthChecker{discordSession: discordSession, stoatGateway: stoat.NewGateway(logger)}
+	stoatGateway := stoat.NewGateway(logger)
+	health := &compositeHealthChecker{
+		discordReady: func() bool { return discordSession.DataReady },
+		stoatHealthy: stoatGateway.Healthy,
+	}
 	limiter := engine.NewGlobalRateLimiter(stoatMinRemoteInterval)
 	eng := engine.New(mappings, health, st, limiter, logger)
 	eng.DryRun = cfg.DryRun
 
-	registerDiscordHandlers(discordSession, cfg.DiscordGuild, cfg.StoatServerID, mappings, stoatClient, eng, logger)
+	discord.RegisterHandlers(discordSession, cfg.DiscordGuild, cfg.StoatServerID, mappings, stoatClient, eng, logger)
 
 	if err := discordSession.Open(); err != nil {
 		logger.Error("discord session open failed", "error", err)
@@ -133,22 +152,38 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	stoatClient.Connect(ctx, health.stoatGateway)
+	stoatClient.Connect(ctx, stoatGateway)
 	logger.Info("stoat gateway connecting", "ws_url", stoatClient.WSURL())
 
-	if err := waitForGuildReady(ctx, discordSession, cfg.DiscordGuild, guildReadyTimeout); err != nil {
+	if err := discord.WaitForGuildReady(ctx, discordSession, cfg.DiscordGuild, guildReadyTimeout); err != nil {
 		logger.Error("timed out waiting for discord guild state", "error", err)
 		os.Exit(1)
 	}
-	if err := waitForStoatHealthy(ctx, health.stoatGateway, stoatHealthyTimeout); err != nil {
+	if err := stoat.WaitForHealthy(ctx, stoatGateway, stoatHealthyTimeout); err != nil {
 		logger.Error("timed out waiting for stoat gateway", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("running startup structure reconcile")
-	if err := runStartupReconcile(ctx, discordSession, cfg.DiscordGuild, cfg.StoatServerID, mappings, stoatClient, mappings, stoatClient, eng, logger); err != nil {
-		logger.Error("startup reconcile failed", "error", err)
+	categories, channels, roles := discord.StructureFromState(discordSession, cfg.DiscordGuild, logger)
+	reconcileParams := reconcile.Params{
+		ServerID:   cfg.StoatServerID,
+		GuildID:    cfg.DiscordGuild,
+		Categories: categories,
+		Channels:   channels,
+		Roles:      roles,
+		Mappings:   mappings,
+		Reader:     stoatClient,
+		Logger:     logger,
+	}
+	if err := reconcile.Bind(ctx, reconcileParams); err != nil {
+		logger.Error("startup reconcile: bind pass failed", "error", err)
 		os.Exit(1)
 	}
+	if err := reconcile.ReconcileLive(ctx, reconcileParams); err != nil {
+		logger.Error("startup reconcile: live pass failed", "error", err)
+		os.Exit(1)
+	}
+	discord.ConvergeAll(discordSession, cfg.DiscordGuild, cfg.StoatServerID, mappings, stoatClient, eng, logger)
 	logger.Info("startup structure reconcile complete")
 
 	<-ctx.Done()

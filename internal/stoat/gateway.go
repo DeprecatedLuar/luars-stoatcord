@@ -2,12 +2,18 @@ package stoat
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"log/slog"
 
 	"within.website/x/web/revolt"
 )
+
+// stoatHealthyPollInterval bounds how often WaitForHealthy re-checks
+// Healthy() while waiting for the Bonfire connection to come up.
+const stoatHealthyPollInterval = 100 * time.Millisecond
 
 // Gateway tracks Bonfire (Stoat gateway) connection health for the engine's
 // HealthChecker (cmd/stoatcord composes this with Discord's own health).
@@ -73,4 +79,23 @@ func (g *Gateway) Healthy() bool {
 // own Connect is non-blocking and self-reconnects).
 func (c *Client) Connect(ctx context.Context, handler revolt.Handler) {
 	c.inner.Connect(ctx, handler)
+}
+
+// WaitForHealthy polls gw until it reports healthy, or ctx/timeout expires
+// first.
+func WaitForHealthy(ctx context.Context, gw *Gateway, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if gw.Healthy() {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s waiting for stoat gateway to become healthy", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(stoatHealthyPollInterval):
+		}
+	}
 }

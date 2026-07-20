@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func discardLogger() *slog.Logger {
@@ -36,5 +37,20 @@ func TestGateway_HealthyFalseAfterUnknownEventError(t *testing.T) {
 	g.MarkDisconnected()
 	if g.Healthy() {
 		t.Fatalf("Healthy() = true after MarkDisconnected, want false")
+	}
+}
+
+func TestWaitForHealthy_TimesOutWhenNeverHealthy(t *testing.T) {
+	gw := NewGateway(discardLogger())
+
+	start := time.Now()
+	err := WaitForHealthy(context.Background(), gw, 50*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("WaitForHealthy returned nil, want a timeout error")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("WaitForHealthy took %v to give up, want close to the 50ms timeout", elapsed)
 	}
 }

@@ -8,10 +8,24 @@ import (
 	"github.com/luar/stoatcord/internal/canonical"
 )
 
-// ServerInfo is the identity-relevant slice of a Stoat server's live state:
-// enough to bind existing entities by name (internal/reconcile) and never
-// used for attribute diffing (spec 2 guardrail -- comparison is always
-// through canonical, live Stoat reads are identity/foreign-detection only).
+// rawOverride is a role or channel permission override as Stoat's wire
+// format encodes it: keys "a"/"d" (ground truth:
+// crates/core/permissions/src/models/server.rs's OverrideField). Distinct
+// from permissionsBody in permission.go, which is the *write*-side shape
+// ("allow"/"deny") for a different set of endpoints.
+type rawOverride struct {
+	Allow int64 `json:"a"`
+	Deny  int64 `json:"d"`
+}
+
+func (o rawOverride) toStoat() canonical.StoatOverwrite {
+	return canonical.StoatOverwrite{Allow: uint64(o.Allow), Deny: uint64(o.Deny)}
+}
+
+// ServerInfo is a Stoat server's live state: identity fields (name,
+// category/channel/role ids) for binding existing entities by name
+// (internal/reconcile.Bind), plus each role's full attributes so a live
+// reconcile pass can diff them against canonical's desired state.
 type ServerInfo struct {
 	Name       string
 	Categories []CategoryInfo
@@ -26,21 +40,33 @@ type CategoryInfo struct {
 	ChannelIDs []string `json:"channels"`
 }
 
-// RoleInfo is a role's identity-relevant fields, decoded out of the
-// library's untyped Server.Roles map[string]any.
+// RoleInfo is a role's live state, decoded out of the library's untyped
+// Server.Roles map[string]any: identity (ID/Name) plus every attribute
+// canonical.StoatRole carries, so a live role can be diffed against
+// canonical's desired ToStoat() shape.
 type RoleInfo struct {
-	ID   string
-	Name string
+	ID          string
+	Name        string
+	Colour      string
+	Hoist       bool
+	Rank        int
+	Permissions canonical.StoatOverwrite
 }
 
-// ChannelInfo is a channel's identity-relevant fields. FetchServer only
-// returns channel ids (the library's Server type carries no per-channel
-// name/type), so matching a channel by name and type needs a separate
-// FetchChannel call per id.
+// ChannelInfo is a channel's live state. FetchServer only returns channel
+// ids (the library's Server type carries no per-channel name/type), so
+// matching a channel by name and type needs a separate FetchChannel call
+// per id. DefaultPermissions/RolePermissions are keyed by raw Stoat ids
+// (the literal sentinel "default" for the channel's everyone-overwrite,
+// real role ids otherwise) -- translating to/from Discord ids is the
+// caller's job, not this package's (internal/stoat never does identity
+// translation).
 type ChannelInfo struct {
-	ID   string
-	Name string
-	Type canonical.ChannelType
+	ID                 string
+	Name               string
+	Type               canonical.ChannelType
+	DefaultPermissions *canonical.StoatOverwrite
+	RolePermissions    map[string]canonical.StoatOverwrite
 }
 
 // rawChannel decodes just the fields this package needs directly off
@@ -53,9 +79,11 @@ type ChannelInfo struct {
 // regardless of kind, so that field cannot discriminate text vs voice.
 // Kind is instead carried by presence of the optional "voice" field.
 type rawChannel struct {
-	ID    string          `json:"_id"`
-	Name  string          `json:"name"`
-	Voice json.RawMessage `json:"voice,omitempty"`
+	ID                 string                 `json:"_id"`
+	Name               string                 `json:"name"`
+	Voice              json.RawMessage        `json:"voice,omitempty"`
+	DefaultPermissions *rawOverride           `json:"default_permissions,omitempty"`
+	RolePermissions    map[string]rawOverride `json:"role_permissions,omitempty"`
 }
 
 func (rc rawChannel) channelType() canonical.ChannelType {
@@ -76,8 +104,9 @@ type rawServer struct {
 	Roles      map[string]json.RawMessage `json:"roles"`
 }
 
-// FetchServer reads a Stoat server's identity-relevant structure: name,
-// ordered categories, channel ids, and roles.
+// FetchServer reads a Stoat server's live structure: name, ordered
+// categories (each with its channel ids), channel ids, and roles with their
+// full attributes.
 func (c *Client) FetchServer(ctx context.Context, serverID string) (ServerInfo, error) {
 	data, err := c.inner.Request(ctx, "GET", "/servers/"+serverID, []byte{})
 	if err != nil {
@@ -92,12 +121,23 @@ func (c *Client) FetchServer(ctx context.Context, serverID string) (ServerInfo, 
 	roles := make([]RoleInfo, 0, len(raw.Roles))
 	for id, roleData := range raw.Roles {
 		var decoded struct {
-			Name string `json:"name"`
+			Name        string      `json:"name"`
+			Colour      string      `json:"colour"`
+			Hoist       bool        `json:"hoist"`
+			Rank        int         `json:"rank"`
+			Permissions rawOverride `json:"permissions"`
 		}
 		if err := json.Unmarshal(roleData, &decoded); err != nil {
 			return ServerInfo{}, fmt.Errorf("stoat: decode role %s on server %s: %w", id, serverID, err)
 		}
-		roles = append(roles, RoleInfo{ID: id, Name: decoded.Name})
+		roles = append(roles, RoleInfo{
+			ID:          id,
+			Name:        decoded.Name,
+			Colour:      decoded.Colour,
+			Hoist:       decoded.Hoist,
+			Rank:        decoded.Rank,
+			Permissions: decoded.Permissions.toStoat(),
+		})
 	}
 
 	return ServerInfo{
@@ -108,9 +148,9 @@ func (c *Client) FetchServer(ctx context.Context, serverID string) (ServerInfo, 
 	}, nil
 }
 
-// FetchChannel reads a single channel's identity-relevant fields (name,
-// canonical type). Needed because FetchServer's channel ids carry no
-// name/type of their own.
+// FetchChannel reads a single channel's live state: name, canonical type,
+// and its default/role permission overwrites. Needed because FetchServer's
+// channel ids carry no attributes of their own.
 func (c *Client) FetchChannel(ctx context.Context, channelID string) (ChannelInfo, error) {
 	data, err := c.inner.Request(ctx, "GET", "/channels/"+channelID, []byte{})
 	if err != nil {
@@ -122,5 +162,21 @@ func (c *Client) FetchChannel(ctx context.Context, channelID string) (ChannelInf
 		return ChannelInfo{}, fmt.Errorf("stoat: decode channel %s: %w", channelID, err)
 	}
 
-	return ChannelInfo{ID: raw.ID, Name: raw.Name, Type: raw.channelType()}, nil
+	var defaultPermissions *canonical.StoatOverwrite
+	if raw.DefaultPermissions != nil {
+		ow := raw.DefaultPermissions.toStoat()
+		defaultPermissions = &ow
+	}
+	rolePermissions := make(map[string]canonical.StoatOverwrite, len(raw.RolePermissions))
+	for roleID, ow := range raw.RolePermissions {
+		rolePermissions[roleID] = ow.toStoat()
+	}
+
+	return ChannelInfo{
+		ID:                 raw.ID,
+		Name:               raw.Name,
+		Type:               raw.channelType(),
+		DefaultPermissions: defaultPermissions,
+		RolePermissions:    rolePermissions,
+	}, nil
 }

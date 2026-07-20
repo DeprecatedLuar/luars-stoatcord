@@ -1,24 +1,14 @@
 package main
 
 import (
-	"io"
-	"log/slog"
 	"testing"
-
-	"github.com/bwmarrin/discordgo"
-	"github.com/luar/stoatcord/internal/stoat"
 )
 
-func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
 func TestCompositeHealthChecker_HealthyWhenBothReady(t *testing.T) {
-	session := &discordgo.Session{DataReady: true}
-	gw := stoat.NewGateway(discardLogger())
-	gw.Ready(nil)
-
-	c := &compositeHealthChecker{discordSession: session, stoatGateway: gw}
+	c := &compositeHealthChecker{
+		discordReady: func() bool { return true },
+		stoatHealthy: func() bool { return true },
+	}
 	ok, degraded := c.Check()
 	if !ok || len(degraded) != 0 {
 		t.Fatalf("Check() = (%v, %v), want (true, [])", ok, degraded)
@@ -26,11 +16,10 @@ func TestCompositeHealthChecker_HealthyWhenBothReady(t *testing.T) {
 }
 
 func TestCompositeHealthChecker_ReportsWhichSideIsDegraded(t *testing.T) {
-	session := &discordgo.Session{DataReady: false}
-	gw := stoat.NewGateway(discardLogger())
-	gw.Ready(nil)
-
-	c := &compositeHealthChecker{discordSession: session, stoatGateway: gw}
+	c := &compositeHealthChecker{
+		discordReady: func() bool { return false },
+		stoatHealthy: func() bool { return true },
+	}
 	ok, degraded := c.Check()
 	if ok {
 		t.Fatalf("Check() ok = true, want false")
@@ -41,10 +30,10 @@ func TestCompositeHealthChecker_ReportsWhichSideIsDegraded(t *testing.T) {
 }
 
 func TestCompositeHealthChecker_ReportsBothDegraded(t *testing.T) {
-	session := &discordgo.Session{DataReady: false}
-	gw := stoat.NewGateway(discardLogger())
-
-	c := &compositeHealthChecker{discordSession: session, stoatGateway: gw}
+	c := &compositeHealthChecker{
+		discordReady: func() bool { return false },
+		stoatHealthy: func() bool { return false },
+	}
 	ok, degraded := c.Check()
 	if ok {
 		t.Fatalf("Check() ok = true, want false")

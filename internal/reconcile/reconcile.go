@@ -47,7 +47,13 @@ type StoatReader interface {
 // Discord's current structure, already translated to canonical (spec 2
 // guardrail) by the caller.
 type Params struct {
-	ServerID   string
+	ServerID string
+	// GuildID is the Discord guild id. Only used by ReconcileLive, to
+	// translate Stoat's "default" permission-overwrite sentinel back to
+	// Discord's @everyone role -- whose id always equals the guild id (see
+	// internal/discord/gateway.go's resolveOverwriteRoleIDs, which does the
+	// same translation in the opposite direction).
+	GuildID    string
 	Categories []canonical.Category
 	Channels   []canonical.Channel
 	Roles      []canonical.Role
@@ -126,7 +132,22 @@ func Bind(ctx context.Context, p Params) error {
 // no active mapping are matched against Stoat entities not already claimed
 // by some other active mapping, by exact name(+kind) equality. Unclaimed
 // Stoat entities left over at the end are foreign (logged, dry-run).
+//
+// An already-active mapping whose Stoat id is no longer present in
+// stoatItems is a dead mapping (the mapped entity vanished from Stoat
+// without our knowledge) -- treated the same as no mapping at all, so the
+// same pass's name-matching below can re-adopt a live entity of the same
+// name instead of leaving it permanently unclaimed/"foreign" and the dead
+// mapping permanently stale. ReconcileLive deliberately does not correct
+// this case (a live-fetch miss there is logged and left untouched) --
+// detecting and clearing a dead mapping is identity work, squarely Bind's
+// job, not attribute-drift verification's.
 func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatItems []identity) error {
+	liveStoatIDs := make(map[string]bool, len(stoatItems))
+	for _, s := range stoatItems {
+		liveStoatIDs[s.id] = true
+	}
+
 	claimed := make(map[string]bool, len(stoatItems))
 	var unmapped []identity
 
@@ -136,8 +157,14 @@ func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatIte
 			return fmt.Errorf("reconcile: get mapping %s %s: %w", entityType, d.id, err)
 		}
 		if m.Found && m.Status == engine.StatusActive {
-			claimed[m.StoatID] = true
-			continue
+			if liveStoatIDs[m.StoatID] {
+				claimed[m.StoatID] = true
+				continue
+			}
+			p.Logger.Warn("reconcile: dead mapping detected, clearing for re-bind", "entity_type", entityType, "discord_id", d.id, "stale_stoat_id", m.StoatID)
+			if err := p.Mappings.Remove(string(entityType), d.id); err != nil {
+				return fmt.Errorf("reconcile: clear dead mapping %s %s: %w", entityType, d.id, err)
+			}
 		}
 		unmapped = append(unmapped, d)
 	}

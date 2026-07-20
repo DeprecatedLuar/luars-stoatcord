@@ -69,7 +69,7 @@ func TestBuildChannelOp_PopulatesDependsOnFromOverwriteRoles(t *testing.T) {
 		},
 	}
 
-	op, ok := BuildChannelOp(engine.OpCreate, ch, "srv1", newFakeMappingReader(), &fakeChannelWriter{}, logger)
+	op, ok := BuildChannelOp(engine.OpCreate, ch, "guild1", "srv1", newFakeMappingReader(), &fakeChannelWriter{}, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp returned ok=false for a supported channel type")
 	}
@@ -84,7 +84,7 @@ func TestBuildChannelOp_UnsupportedChannelTypeReturnsFalse(t *testing.T) {
 	logger := newTestLogger(&buf)
 	ch := &discordgo.Channel{ID: "cat1", Name: "Category", Type: discordgo.ChannelTypeGuildCategory}
 
-	_, ok := BuildChannelOp(engine.OpCreate, ch, "srv1", newFakeMappingReader(), &fakeChannelWriter{}, logger)
+	_, ok := BuildChannelOp(engine.OpCreate, ch, "guild1", "srv1", newFakeMappingReader(), &fakeChannelWriter{}, logger)
 	if ok {
 		t.Fatalf("BuildChannelOp returned ok=true for a category channel type")
 	}
@@ -96,7 +96,7 @@ func TestBuildChannelOp_ApplyCreatesWhenNotMapped(t *testing.T) {
 	ch := &discordgo.Channel{ID: "chan1", Name: "general", Type: discordgo.ChannelTypeGuildText}
 
 	writer := &fakeChannelWriter{createReturns: "stoat-chan1"}
-	op, ok := BuildChannelOp(engine.OpCreate, ch, "srv1", newFakeMappingReader(), writer, logger)
+	op, ok := BuildChannelOp(engine.OpCreate, ch, "guild1", "srv1", newFakeMappingReader(), writer, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp ok=false")
 	}
@@ -122,7 +122,7 @@ func TestBuildChannelOp_ApplyEditsWhenAlreadyMapped(t *testing.T) {
 	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
 
 	writer := &fakeChannelWriter{}
-	op, ok := BuildChannelOp(engine.OpUpdate, ch, "srv1", mappings, writer, logger)
+	op, ok := BuildChannelOp(engine.OpUpdate, ch, "guild1", "srv1", mappings, writer, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp ok=false")
 	}
@@ -155,7 +155,7 @@ func TestBuildChannelOp_ApplyResolvesOverwriteRoleIDsToStoatIDs(t *testing.T) {
 	mappings.set(string(engine.EntityRole), "role1", engine.Mapping{Found: true, StoatID: "stoat-role1", Status: engine.StatusActive})
 
 	writer := &fakeChannelWriter{createReturns: "stoat-chan1"}
-	op, ok := BuildChannelOp(engine.OpCreate, ch, "srv1", mappings, writer, logger)
+	op, ok := BuildChannelOp(engine.OpCreate, ch, "guild1", "srv1", mappings, writer, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp ok=false")
 	}
@@ -172,12 +172,50 @@ func TestBuildChannelOp_ApplyResolvesOverwriteRoleIDsToStoatIDs(t *testing.T) {
 	}
 }
 
+// TestBuildChannelOp_ApplyResolvesEveryoneOverwriteToDefaultSentinel covers
+// the @everyone overwrite gap: Discord's @everyone role id always equals the
+// guild id, but Stoat has no role entity for "everyone" -- its channel
+// permission endpoint requires the literal sentinel "default" for that
+// target (see internal/stoat/permission.go's defaultRoleID), and 404s on any
+// real role id, including one that was mirrored to Stoat as an actual role.
+// No mapping row is registered for the guild id here on purpose: resolution
+// must not depend on the role-mapping table for this case.
+func TestBuildChannelOp_ApplyResolvesEveryoneOverwriteToDefaultSentinel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	ch := &discordgo.Channel{
+		ID:   "chan1",
+		Name: "general",
+		Type: discordgo.ChannelTypeGuildText,
+		PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			{ID: "guild1", Type: discordgo.PermissionOverwriteTypeRole, Allow: 1 << 10},
+		},
+	}
+
+	writer := &fakeChannelWriter{createReturns: "stoat-chan1"}
+	op, ok := BuildChannelOp(engine.OpCreate, ch, "guild1", "srv1", newFakeMappingReader(), writer, logger)
+	if !ok {
+		t.Fatalf("BuildChannelOp ok=false")
+	}
+
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if _, ok := writer.createCh.Overwrites["default"]; !ok {
+		t.Fatalf("everyone overwrite not resolved to \"default\" sentinel: %+v", writer.createCh.Overwrites)
+	}
+	if _, ok := writer.createCh.Overwrites["guild1"]; ok {
+		t.Fatalf("Overwrites still keyed by raw guild/everyone id: %+v", writer.createCh.Overwrites)
+	}
+}
+
 func TestBuildChannelOp_DiffComparesStoatShapeNotRawCanonicalJSON(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
 	ch := &discordgo.Channel{ID: "chan1", Name: "general", Type: discordgo.ChannelTypeGuildText}
 
-	op, ok := BuildChannelOp(engine.OpUpdate, ch, "srv1", newFakeMappingReader(), &fakeChannelWriter{}, logger)
+	op, ok := BuildChannelOp(engine.OpUpdate, ch, "guild1", "srv1", newFakeMappingReader(), &fakeChannelWriter{}, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp ok=false")
 	}
@@ -255,7 +293,7 @@ func TestBuildChannelOp_ApplyFallsBackToCreateWhenMappingPending(t *testing.T) {
 	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "", Status: engine.StatusPending})
 
 	writer := &fakeChannelWriter{createReturns: "stoat-chan1"}
-	op, ok := BuildChannelOp(engine.OpUpdate, ch, "srv1", mappings, writer, logger)
+	op, ok := BuildChannelOp(engine.OpUpdate, ch, "guild1", "srv1", mappings, writer, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp ok=false")
 	}
@@ -289,7 +327,7 @@ func TestBuildChannelOp_ApplyEditsWhenMappingPendingButHasStoatID(t *testing.T) 
 	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusPending})
 
 	writer := &fakeChannelWriter{}
-	op, ok := BuildChannelOp(engine.OpUpdate, ch, "srv1", mappings, writer, logger)
+	op, ok := BuildChannelOp(engine.OpUpdate, ch, "guild1", "srv1", mappings, writer, logger)
 	if !ok {
 		t.Fatalf("BuildChannelOp ok=false")
 	}

@@ -1,16 +1,13 @@
-package main
+package discord
 
 import (
 	"bytes"
-	"log/slog"
+	"context"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
-
-func testGatewayLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-}
 
 // categoriesFromState must order categories by their own Discord Position
 // (sidebar display order), not by id -- a prior version sorted by id, which
@@ -34,7 +31,7 @@ func TestCategoriesFromState_OrdersByCategoryPosition(t *testing.T) {
 		}
 	}
 
-	cats := categoriesFromState(session, "guild1", testGatewayLogger())
+	cats := categoriesFromState(session, "guild1", newTestLogger(&bytes.Buffer{}))
 
 	if len(cats) != 2 {
 		t.Fatalf("cats = %+v, want 2", cats)
@@ -43,5 +40,38 @@ func TestCategoriesFromState_OrdersByCategoryPosition(t *testing.T) {
 	// its id sorting after cat-z lexically.
 	if cats[0].ID != "cat-a" || cats[1].ID != "cat-z" {
 		t.Fatalf("order = [%s, %s], want [cat-a, cat-z] (must follow Discord Position, not id)", cats[0].ID, cats[1].ID)
+	}
+}
+
+func TestWaitForGuildReady_ReturnsImmediatelyWhenAlreadyInState(t *testing.T) {
+	session := &discordgo.Session{State: discordgo.NewState()}
+	if err := session.State.GuildAdd(&discordgo.Guild{ID: "guild1"}); err != nil {
+		t.Fatalf("GuildAdd: %v", err)
+	}
+
+	start := time.Now()
+	err := WaitForGuildReady(context.Background(), session, "guild1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("WaitForGuildReady: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("WaitForGuildReady took %v, want near-instant for an already-ready guild", elapsed)
+	}
+}
+
+// A guild that never sends GUILD_CREATE (e.g. bot not actually a member,
+// misconfigured guild id) must not wedge startup forever.
+func TestWaitForGuildReady_TimesOutWhenGuildNeverArrives(t *testing.T) {
+	session := &discordgo.Session{State: discordgo.NewState()}
+
+	start := time.Now()
+	err := WaitForGuildReady(context.Background(), session, "never-arrives", 50*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("WaitForGuildReady returned nil, want a timeout error")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("WaitForGuildReady took %v to give up, want close to the 50ms timeout", elapsed)
 	}
 }

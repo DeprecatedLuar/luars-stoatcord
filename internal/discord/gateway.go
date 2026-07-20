@@ -10,6 +10,13 @@ import (
 	"github.com/luar/stoatcord/internal/engine"
 )
 
+// everyoneOverwriteRoleID is the sentinel Stoat expects in place of a role
+// id when a channel permission overwrite targets Discord's @everyone role
+// (mirrors internal/stoat/permission.go's defaultRoleID, which the two
+// packages can't share -- internal/stoat's Stoat-shape constant is not this
+// package's concern).
+const everyoneOverwriteRoleID = "default"
+
 // MappingReader resolves a discord id's current mapping row. Needed both to
 // build a channel op's DependsOn set from its overwrite roles, and -- once
 // dependencies are satisfied -- inside Apply to translate a referenced
@@ -32,7 +39,7 @@ type ChannelWriter interface {
 // BuildChannelOp translates a Discord channel create/update event into an
 // engine.Op. ok is false for channel types this mirror does not model
 // (categories, threads, DMs -- see ChannelTypeFromDiscord).
-func BuildChannelOp(kind engine.OpKind, ch *discordgo.Channel, stoatServerID string, mappings MappingReader, writer ChannelWriter, logger *slog.Logger) (engine.Op, bool) {
+func BuildChannelOp(kind engine.OpKind, ch *discordgo.Channel, guildID, stoatServerID string, mappings MappingReader, writer ChannelWriter, logger *slog.Logger) (engine.Op, bool) {
 	canonicalCh, ok := ChannelFromDiscord(ch, logger)
 	if !ok {
 		return engine.Op{}, false
@@ -64,7 +71,7 @@ func BuildChannelOp(kind engine.OpKind, ch *discordgo.Channel, stoatServerID str
 		},
 		Apply: func(ctx context.Context) (string, error) {
 			stoatCh := canonicalCh.ToStoat(logger)
-			resolved, err := resolveOverwriteRoleIDs(stoatCh.Overwrites, mappings)
+			resolved, err := resolveOverwriteRoleIDs(stoatCh.Overwrites, guildID, mappings)
 			if err != nil {
 				return "", err
 			}
@@ -146,9 +153,19 @@ func applyDelete(mappings MappingReader, entityType engine.EntityType, discordID
 // to their mapped Stoat role ids. A role missing from the mapping table is
 // skipped defensively -- DependsOn should already have gated the op until
 // every referenced role is mapped, so this only guards against a race.
-func resolveOverwriteRoleIDs(overwrites map[string]canonical.StoatOverwrite, mappings MappingReader) (map[string]canonical.StoatOverwrite, error) {
+//
+// Discord's @everyone role id always equals guildID -- Stoat has no role
+// entity for "everyone" and its channel permission endpoint 404s
+// (server.roles.get(&role_id) miss) on anything but the literal sentinel
+// "default", so that case is resolved directly instead of through the
+// role-mapping table.
+func resolveOverwriteRoleIDs(overwrites map[string]canonical.StoatOverwrite, guildID string, mappings MappingReader) (map[string]canonical.StoatOverwrite, error) {
 	resolved := make(map[string]canonical.StoatOverwrite, len(overwrites))
 	for discordRoleID, ow := range overwrites {
+		if discordRoleID == guildID {
+			resolved[everyoneOverwriteRoleID] = ow
+			continue
+		}
 		m, err := mappings.Get(string(engine.EntityRole), discordRoleID)
 		if err != nil {
 			return nil, err

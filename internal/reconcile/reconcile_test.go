@@ -260,6 +260,47 @@ func TestBind_ChannelFetchError_SkipsChannelWithoutAbortingBind(t *testing.T) {
 	}
 }
 
+// Reproduces a real session finding: a channel's mapping row was left
+// active pointing at a Stoat channel id that no longer exists live (the
+// underlying entity vanished without our knowledge). Because bindEntities
+// treated "active mapping" as claimed regardless of whether the mapped
+// Stoat id still exists, the real live channel of the same name was never
+// re-adopted -- it sat there logged as "foreign, would delete" forever,
+// and the stale mapping was never corrected either (ReconcileLive
+// explicitly treats a live-fetch miss as out of scope, by design). Bind
+// must detect this and clear the dead mapping so the same pass's
+// name-matching re-adopts the live entity.
+func TestBind_DeadMapping_ClearedAndReboundToLiveEntityOfSameName(t *testing.T) {
+	mappings := newFakeMappings()
+	mappings.WritePending("channel", "dc-chan-1", "{}")
+	mappings.Confirm("channel", "dc-chan-1", "stoat-chan-dead") // stale: doesn't exist live
+
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			ChannelIDs: []string{"stoat-chan-live"}, // the dead id is NOT here
+		},
+		channels: map[string]stoat.ChannelInfo{
+			"stoat-chan-live": {ID: "stoat-chan-live", Name: "general", Type: canonical.ChannelTypeText},
+		},
+	}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Channels: []canonical.Channel{{ID: "dc-chan-1", Name: "general", Type: canonical.ChannelTypeText}},
+		Mappings: mappings,
+		Reader:   reader,
+		Logger:   testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	m, _ := mappings.Get("channel", "dc-chan-1")
+	if !m.Found || m.Status != engine.StatusActive || m.StoatID != "stoat-chan-live" {
+		t.Fatalf("channel mapping = %+v, want rebound to the live channel stoat-chan-live", m)
+	}
+}
+
 func TestBind_NoStoatMatch_LeavesUnboundForConvergeToCreate(t *testing.T) {
 	mappings := newFakeMappings()
 	reader := &fakeReader{}
