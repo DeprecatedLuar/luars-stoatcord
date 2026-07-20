@@ -33,6 +33,15 @@ type Engine struct {
 
 	waitersMu sync.Mutex
 	waiters   map[DependencyKey][]Op
+
+	// DryRun, when true, makes process() log every op's would-be action
+	// (create/edit/delete) instead of calling WritePending/Apply/Confirm.
+	// Read-only (mappings.Get) so it never mutates the mapping table --
+	// unlike a real op, a dry-run op leaves nothing behind to clean up or
+	// misinterpret on the next real run. Exported for the caller to set
+	// post-construction (cmd/stoatcord), not a New() parameter, so it stays
+	// out of every existing call site's signature.
+	DryRun bool
 }
 
 // New constructs an Engine. log may be nil in tests that don't assert on
@@ -158,6 +167,11 @@ func (e *Engine) process(op Op) {
 		return
 	}
 
+	if e.DryRun {
+		e.logDryRun(op)
+		return
+	}
+
 	if op.Kind == OpDelete {
 		if _, err := e.runRemote(op); err != nil {
 			e.logRemoteError(op, err)
@@ -211,6 +225,31 @@ func (e *Engine) process(op Op) {
 	}
 
 	e.notifyWaiters(op.EntityType, op.DiscordID)
+}
+
+// logDryRun reports what process() would have done for op, without writing
+// anything: mappings.Get is read-only, so a dry-run op leaves the mapping
+// table exactly as it found it.
+func (e *Engine) logDryRun(op Op) {
+	if e.log == nil {
+		return
+	}
+
+	if op.Kind == OpDelete {
+		e.log.Warn("engine: dry-run, would delete", "entity_type", op.EntityType, "discord_id", op.DiscordID)
+		return
+	}
+
+	action := "create"
+	mapping, err := e.mappings.Get(string(op.EntityType), op.DiscordID)
+	if err != nil {
+		e.log.Error("engine: dry-run, failed to read mapping", "entity_type", op.EntityType, "discord_id", op.DiscordID, "error", err)
+		return
+	}
+	if mapping.HasStoatEntity() {
+		action = "edit"
+	}
+	e.log.Warn("engine: dry-run, would apply op", "action", action, "entity_type", op.EntityType, "discord_id", op.DiscordID, "mapping_found", mapping.Found, "mapping_status", mapping.Status, "mapping_stoat_id", mapping.StoatID)
 }
 
 func (e *Engine) logRemoteError(op Op, err error) {

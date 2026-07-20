@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,7 @@ const (
 	defaultEnvFile = ".env"
 	dbFileName     = "stoatcord.db"
 	lockFileName   = "stoatcord.lock"
+	logFileName    = "stoatcord.log"
 
 	// stoatMinRemoteInterval is the floor spacing between Stoat remote
 	// calls (engine.GlobalRateLimiter). Not a spec-known constant -- Phase 0
@@ -50,19 +52,35 @@ func main() {
 		os.Stderr.WriteString(err.Error() + "\n")
 		os.Exit(1)
 	}
-	logger := logging.New(os.Stderr, level, term.IsTerminal(int(os.Stderr.Fd())))
-
-	logger.Info("config loaded", "discord_guild", cfg.DiscordGuild, "stoat_server", cfg.StoatServerID)
 
 	dataDir, err := config.DataDir()
 	if err != nil {
-		logger.Error("resolve data dir failed", "error", err)
+		os.Stderr.WriteString("resolve data dir failed: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		logger.Error("create data dir failed", "error", err, "path", dataDir)
+		os.Stderr.WriteString("create data dir failed: " + err.Error() + "\n")
 		os.Exit(1)
 	}
+
+	// Logs also append to a file in dataDir (same place as the DB, already
+	// outside the repo -- no .gitignore entry needed) so a run's output
+	// survives after the terminal is gone, for post-mortem grepping.
+	logPath := filepath.Join(dataDir, logFileName)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		os.Stderr.WriteString("open log file failed: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	defer logFile.Close()
+	logger := logging.New(io.MultiWriter(os.Stderr, logFile), level, term.IsTerminal(int(os.Stderr.Fd())))
+
+	logger.Info("config loaded", "discord_guild", cfg.DiscordGuild, "stoat_server", cfg.StoatServerID)
+	logger.Info("logging to file", "path", logPath)
+	if cfg.DryRun {
+		logger.Warn("engine dry-run is ON -- no real Stoat writes will happen (set STOATCORD_DRY_RUN=false to disable)")
+	}
+
 	daemonLock, err := lock.Acquire(filepath.Join(dataDir, lockFileName))
 	if err != nil {
 		if errors.Is(err, lock.ErrLocked) {
@@ -101,6 +119,7 @@ func main() {
 	health := &compositeHealthChecker{discordSession: discordSession, stoatGateway: stoat.NewGateway(logger)}
 	limiter := engine.NewGlobalRateLimiter(stoatMinRemoteInterval)
 	eng := engine.New(mappings, health, st, limiter, logger)
+	eng.DryRun = cfg.DryRun
 
 	registerDiscordHandlers(discordSession, cfg.DiscordGuild, cfg.StoatServerID, mappings, stoatClient, eng, logger)
 

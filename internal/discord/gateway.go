@@ -98,16 +98,25 @@ func BuildChannelDeleteOp(discordChannelID string, mappings MappingReader, write
 	}
 }
 
-// applyCreateOrEdit implements the "found & active -> edit; else -> create"
+// applyCreateOrEdit implements the "has a stoat id -> edit; else -> create"
 // branch shared by every entity's Apply closure (see BuildChannelOp,
-// BuildRoleOp): a pending row (create written but not yet remote-confirmed)
-// has an empty StoatID, so only an active mapping is eligible for edit.
+// BuildRoleOp). Deciding on Status instead of StoatID presence is a bug, not
+// a stricter check: engine.process() always calls WritePending -- which
+// flips Status to pending but preserves any existing StoatID -- immediately
+// before calling Apply, so Apply's own mapping read here always observes
+// Status=pending on every live update to an already-bound entity, active or
+// not. A pending row only means "no entity yet" when StoatID is also empty
+// (the first-time-create case, per store.WritePending's own doc comment);
+// a pending row with a non-empty StoatID is an update whose remote
+// confirm hasn't landed yet and must still edit, or it creates a duplicate
+// and clobbers the mapping's stoat_id every time (confirmed via an isolated
+// reproduction against the real engine+store, not assumed).
 func applyCreateOrEdit(mappings MappingReader, entityType engine.EntityType, discordID string, edit func(stoatID string) error, create func() (string, error)) (string, error) {
 	mapping, err := mappings.Get(string(entityType), discordID)
 	if err != nil {
 		return "", err
 	}
-	if mapping.Found && mapping.Status == engine.StatusActive {
+	if mapping.HasStoatEntity() {
 		if err := edit(mapping.StoatID); err != nil {
 			return "", err
 		}

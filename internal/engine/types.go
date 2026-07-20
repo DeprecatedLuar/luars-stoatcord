@@ -38,6 +38,21 @@ type Mapping struct {
 	CanonicalState string
 }
 
+// HasStoatEntity reports whether m already identifies a real, existing
+// Stoat entity -- the single source of truth for every create-vs-edit
+// decision in this codebase (internal/discord's applyCreateOrEdit,
+// Engine.logDryRun). Deliberately keys off StoatID, not Status: process()
+// always calls WritePending -- which flips Status to pending but preserves
+// any existing StoatID -- immediately before Apply runs, so Status reads
+// pending on every live update to an already-bound entity regardless of
+// whether it's genuinely new. StoatID is empty only for a true first-time
+// create (store.WritePending's first-insert case); once WritePending
+// preserves a real id across an update's pending window, that id is the
+// only reliable signal an entity already exists remotely.
+func (m Mapping) HasStoatEntity() bool {
+	return m.Found && m.StoatID != ""
+}
+
 // MappingStore is the generic persistence interface over the five
 // common-shape mapping tables (server/category/channel/role/emoji, spec 3).
 // It is identity/persistence only, never translation -- what to compare or

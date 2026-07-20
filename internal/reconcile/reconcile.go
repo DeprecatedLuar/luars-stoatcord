@@ -93,7 +93,13 @@ func Bind(ctx context.Context, p Params) error {
 	for _, id := range server.ChannelIDs {
 		info, err := p.Reader.FetchChannel(ctx, id)
 		if err != nil {
-			return fmt.Errorf("reconcile: fetch channel %s: %w", id, err)
+			// A channel the bot cannot view (e.g. a role-restricted
+			// channel with no ViewChannel grant) 403s on fetch. That
+			// channel simply can't be identity-matched -- exclude it from
+			// this pass (never bound, never flagged foreign) rather than
+			// aborting the whole reconcile over one inaccessible channel.
+			p.Logger.Warn("reconcile: skipping channel, fetch failed", "stoat_channel_id", id, "error", err)
+			continue
 		}
 		stoatChannels = append(stoatChannels, identity{id: info.ID, name: info.Name, kind: string(info.Type)})
 	}

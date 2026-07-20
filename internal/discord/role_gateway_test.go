@@ -174,6 +174,39 @@ func TestBuildRoleOp_ApplyFallsBackToCreateWhenMappingPending(t *testing.T) {
 	}
 }
 
+// See the equivalent channel test (gateway_test.go) for why this case
+// matters: process() always calls WritePending -- flipping status to
+// pending but preserving stoat_id -- immediately before Apply, so Apply's
+// own mapping read always sees status=pending on every live update to an
+// already-bound role, even though it genuinely already exists on Stoat.
+// Keying off Status instead of StoatID presence means every update to an
+// existing role creates a duplicate and clobbers the mapping's stoat_id.
+func TestBuildRoleOp_ApplyEditsWhenMappingPendingButHasStoatID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	r := &discordgo.Role{ID: "role1", Name: "Renamed"}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityRole), "role1", engine.Mapping{Found: true, StoatID: "stoat-role1", Status: engine.StatusPending})
+
+	writer := &fakeRoleWriter{}
+	op := BuildRoleOp(engine.OpUpdate, r, "srv1", mappings, writer, logger)
+
+	id, err := op.Apply(context.Background())
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if id != "stoat-role1" {
+		t.Fatalf("id = %q, want stoat-role1", id)
+	}
+	if writer.editServerID != "srv1" || writer.editRoleID != "stoat-role1" || writer.editRole.Name != "Renamed" {
+		t.Fatalf("EditRole got serverID=%q roleID=%q role=%+v, want it called with the existing stoat id", writer.editServerID, writer.editRoleID, writer.editRole)
+	}
+	if writer.createServerID != "" {
+		t.Fatalf("CreateRole was called (serverID=%q) for an entity that already has a stoat id -- this creates a duplicate", writer.createServerID)
+	}
+}
+
 func TestBuildRoleDeleteOp_ApplyNoOpWhenMappingPending(t *testing.T) {
 	mappings := newFakeMappingReader()
 	mappings.set(string(engine.EntityRole), "role1", engine.Mapping{Found: true, StoatID: "", Status: engine.StatusPending})

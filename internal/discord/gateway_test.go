@@ -271,6 +271,44 @@ func TestBuildChannelOp_ApplyFallsBackToCreateWhenMappingPending(t *testing.T) {
 	}
 }
 
+// A row can be Status=pending with a non-empty StoatID: process() (engine)
+// always calls WritePending -- which flips status to pending but preserves
+// the existing stoat_id -- immediately before calling Apply. So on every
+// live update to an already-bound entity, Apply's own mapping read always
+// observes status=pending even though the entity genuinely already exists
+// on Stoat. Apply must key off StoatID presence, not Status, or it creates
+// a duplicate and clobbers the mapping's stoat_id every single time an
+// existing entity is updated (found via an isolated reproduction using the
+// real engine+store+BuildChannelOp, not a mock).
+func TestBuildChannelOp_ApplyEditsWhenMappingPendingButHasStoatID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	ch := &discordgo.Channel{ID: "chan1", Name: "renamed", Type: discordgo.ChannelTypeGuildText}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusPending})
+
+	writer := &fakeChannelWriter{}
+	op, ok := BuildChannelOp(engine.OpUpdate, ch, "srv1", mappings, writer, logger)
+	if !ok {
+		t.Fatalf("BuildChannelOp ok=false")
+	}
+
+	id, err := op.Apply(context.Background())
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if id != "stoat-chan1" {
+		t.Fatalf("id = %q, want stoat-chan1", id)
+	}
+	if writer.editChannelID != "stoat-chan1" || writer.editCh.Name != "renamed" {
+		t.Fatalf("EditChannel got channelID=%q ch=%+v, want it called with the existing stoat id", writer.editChannelID, writer.editCh)
+	}
+	if writer.createServerID != "" {
+		t.Fatalf("CreateChannel was called (serverID=%q) for an entity that already has a stoat id -- this creates a duplicate", writer.createServerID)
+	}
+}
+
 func TestBuildChannelDeleteOp_ApplyNoOpWhenMappingPending(t *testing.T) {
 	mappings := newFakeMappingReader()
 	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "", Status: engine.StatusPending})

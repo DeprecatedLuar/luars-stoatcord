@@ -173,6 +173,62 @@ STOAT_API_BASE=https://custom.example.com
 	}
 }
 
+func TestLoad_DryRun_DefaultsOnWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := writeEnvFile(t, dir, `
+STOATCORD_DISCORD_TOKEN=d-token
+STOATCORD_STOAT_TOKEN=s-token
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DryRun {
+		t.Errorf("DryRun = %v, want true (safe default while STOATCORD_DRY_RUN is unset)", cfg.DryRun)
+	}
+}
+
+func TestLoad_DryRun_ReadFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := writeEnvFile(t, dir, `
+STOATCORD_DISCORD_TOKEN=d-token
+STOATCORD_STOAT_TOKEN=s-token
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
+`)
+	// t.Setenv (not the .env file) so it's guaranteed to win and is
+	// auto-restored after the test -- godotenv.Load never overwrites an
+	// already-set real env var, so a file-only value here could otherwise
+	// leak between tests sharing this process's environment.
+	t.Setenv("STOATCORD_DRY_RUN", "false")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DryRun {
+		t.Errorf("DryRun = %v, want false (STOATCORD_DRY_RUN=false must override the default)", cfg.DryRun)
+	}
+}
+
+func TestLoad_DryRun_InvalidValueFailsLoud(t *testing.T) {
+	dir := t.TempDir()
+	path := writeEnvFile(t, dir, `
+STOATCORD_DISCORD_TOKEN=d-token
+STOATCORD_STOAT_TOKEN=s-token
+DISCORD_SERVER_ID=guild-1
+STOAT_SERVER_ID=server-1
+`)
+	t.Setenv("STOATCORD_DRY_RUN", "maybe")
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for unparseable STOATCORD_DRY_RUN, got nil")
+	}
+}
+
 func TestLoad_MissingEnvFile_FallsBackToRealEnv(t *testing.T) {
 	t.Setenv("STOATCORD_DISCORD_TOKEN", "env-token")
 	t.Setenv("STOATCORD_STOAT_TOKEN", "env-stoat-token")

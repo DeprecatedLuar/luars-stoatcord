@@ -3,6 +3,7 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -48,8 +49,9 @@ func (f *fakeMappings) Remove(entityType, discordID string) error {
 }
 
 type fakeReader struct {
-	server   stoat.ServerInfo
-	channels map[string]stoat.ChannelInfo
+	server      stoat.ServerInfo
+	channels    map[string]stoat.ChannelInfo
+	channelErrs map[string]error
 }
 
 func (f *fakeReader) FetchServer(ctx context.Context, serverID string) (stoat.ServerInfo, error) {
@@ -57,6 +59,9 @@ func (f *fakeReader) FetchServer(ctx context.Context, serverID string) (stoat.Se
 }
 
 func (f *fakeReader) FetchChannel(ctx context.Context, channelID string) (stoat.ChannelInfo, error) {
+	if err, ok := f.channelErrs[channelID]; ok {
+		return stoat.ChannelInfo{}, err
+	}
 	return f.channels[channelID], nil
 }
 
@@ -212,6 +217,46 @@ func TestBind_ForeignStoatEntity_NeverDeleted(t *testing.T) {
 	// logged, never deleted or bound to anything.
 	if len(mappings.rows) != 0 {
 		t.Fatalf("mappings = %+v, want empty (foreign entity must not be touched)", mappings.rows)
+	}
+}
+
+// Live-reproduced: a channel the bot cannot view (role-restricted, no
+// ViewChannel grant) 403s on FetchChannel. That must not abort the whole
+// bind pass -- the channel is simply excluded from identity matching.
+func TestBind_ChannelFetchError_SkipsChannelWithoutAbortingBind(t *testing.T) {
+	mappings := newFakeMappings()
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			Categories: []stoat.CategoryInfo{{ID: "stoat-cat-1", Title: "General"}},
+			ChannelIDs: []string{"stoat-chan-forbidden", "stoat-chan-1"},
+		},
+		channels: map[string]stoat.ChannelInfo{
+			"stoat-chan-1": {ID: "stoat-chan-1", Name: "general", Type: canonical.ChannelTypeText},
+		},
+		channelErrs: map[string]error{
+			"stoat-chan-forbidden": errors.New("403: MissingPermission ViewChannel"),
+		},
+	}
+
+	err := Bind(context.Background(), Params{
+		ServerID:   "srv1",
+		Categories: []canonical.Category{{ID: "dc-cat-1", Name: "General"}},
+		Channels:   []canonical.Channel{{ID: "dc-chan-1", Name: "general", Type: canonical.ChannelTypeText}},
+		Mappings:   mappings,
+		Reader:     reader,
+		Logger:     testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v, want no error despite one channel's fetch failing", err)
+	}
+
+	catMapping, _ := mappings.Get("category", "dc-cat-1")
+	if !catMapping.Found {
+		t.Fatalf("category mapping = %+v, want bound (unrelated to the channel fetch failure)", catMapping)
+	}
+	chanMapping, _ := mappings.Get("channel", "dc-chan-1")
+	if !chanMapping.Found || chanMapping.StoatID != "stoat-chan-1" {
+		t.Fatalf("channel mapping = %+v, want bound to stoat-chan-1 despite the other channel's fetch failure", chanMapping)
 	}
 }
 

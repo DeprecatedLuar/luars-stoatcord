@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -24,6 +25,7 @@ type Config struct {
 	StoatServerID string
 	StoatAPIBase  string
 	LogLevel      string
+	DryRun        bool
 }
 
 const (
@@ -33,7 +35,15 @@ const (
 	envStoatServerID = "STOAT_SERVER_ID"
 	envStoatAPIBase  = "STOAT_API_BASE"
 	envLogLevel      = "LOG_LEVEL"
+	envDryRun        = "STOATCORD_DRY_RUN"
 )
+
+// defaultDryRun is what DryRun resolves to when STOATCORD_DRY_RUN is unset:
+// on, so a fresh checkout or a forgotten env var never writes to Stoat by
+// accident during this dev phase. Flip the default to false once the daemon
+// is trusted for real writes -- STOATCORD_DRY_RUN=false always overrides
+// this regardless of the default.
+const defaultDryRun = true
 
 // Load reads envFile into the process environment (if it exists; real
 // environment variables always take precedence over it), then builds a
@@ -56,6 +66,15 @@ func Load(envFile string) (*Config, error) {
 	}
 	if cfg.StoatAPIBase == "" {
 		cfg.StoatAPIBase = defaultStoatAPIBase
+	}
+
+	cfg.DryRun = defaultDryRun
+	if raw := os.Getenv(envDryRun); raw != "" {
+		dryRun, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("config: parse %s=%q: %w", envDryRun, raw, err)
+		}
+		cfg.DryRun = dryRun
 	}
 
 	var missing []string
