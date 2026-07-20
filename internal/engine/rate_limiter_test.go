@@ -56,6 +56,39 @@ func TestGlobalRateLimiter_Wait_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// TestGlobalRateLimiter_BackoffDuringConcurrentSleepIsHonored reproduces the
+// live reconcile cascade: a caller that already committed to an earlier slot
+// and is mid-sleep must still honor a Backoff() issued by a different
+// concurrent caller's 429 while it sleeps, not fire at its stale pre-backoff
+// time. Wait previously froze its sleep duration at call time and never
+// re-checked nextAllowed, so a burst of concurrent workers all landed inside
+// Stoat's still-active punish window and burned through their retry budget.
+func TestGlobalRateLimiter_BackoffDuringConcurrentSleepIsHonored(t *testing.T) {
+	limiter := NewGlobalRateLimiter(20 * time.Millisecond)
+	ctx := context.Background()
+
+	if err := limiter.Wait(ctx); err != nil {
+		t.Fatalf("priming Wait: %v", err)
+	}
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		limiter.Wait(ctx) // commits to a ~20ms slot before the Backoff below lands
+		close(done)
+	}()
+
+	time.Sleep(5 * time.Millisecond) // let the goroutine commit its slot and start sleeping
+	limiter.Backoff(0.2)             // simulates a concurrent 429 extending the window to 200ms
+
+	<-done
+	elapsed := time.Since(start)
+
+	if elapsed < 190*time.Millisecond {
+		t.Fatalf("expected the already-sleeping caller to honor the concurrent backoff, elapsed %v", elapsed)
+	}
+}
+
 func TestGlobalRateLimiter_SharedAcrossConcurrentCallers(t *testing.T) {
 	limiter := NewGlobalRateLimiter(20 * time.Millisecond)
 	ctx := context.Background()

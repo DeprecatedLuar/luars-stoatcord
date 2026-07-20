@@ -35,9 +35,14 @@ const (
 	PermBanMembers      Permission = "BAN_MEMBERS"
 	PermTimeoutMembers  Permission = "TIMEOUT_MEMBERS"
 	PermMentionEveryone Permission = "MENTION_EVERYONE"
-	PermViewAuditLog    Permission = "VIEW_AUDIT_LOG"
 
-	// Drops (spec 4): no Stoat equivalent, logged whenever encountered.
+	// Drops (spec 4): no reachable Stoat equivalent, logged whenever
+	// encountered. PermViewAuditLog's bit (ViewAuditLogs, 1<<40) exists in
+	// Stoat's enum, but Stoat's own web client exposes no UI toggle for it
+	// anywhere -- the only way to grant it to any role is a raw API call by
+	// the server owner, bypassing normal administration entirely. Treated as
+	// unreachable in practice, same as a true no-equivalent drop.
+	PermViewAuditLog    Permission = "VIEW_AUDIT_LOG"
 	PermUseAppCommands  Permission = "USE_APP_COMMANDS"
 	PermPrioritySpeaker Permission = "PRIORITY_SPEAKER"
 	PermSendTTS         Permission = "SEND_TTS"
@@ -73,7 +78,6 @@ var stoatBits = map[Permission]uint64{
 	PermDeafenMembers:   1 << 34,
 	PermMoveMembers:     1 << 35,
 	PermMentionEveryone: 1 << 37,
-	PermViewAuditLog:    1 << 40,
 }
 
 // StoatBits aggregates perms into a single Stoat permission bitmask. Any

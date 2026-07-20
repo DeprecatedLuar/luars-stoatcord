@@ -107,12 +107,14 @@ The canonical permission set is the **union of Discord's set**, with each entry 
 | `BAN_MEMBERS` | Ban Members | `BanMembers` | |
 | `TIMEOUT_MEMBERS` | Timeout Members | `TimeoutMembers` | |
 | `MENTION_EVERYONE` | Mention @everyone | `MentionEveryone` | |
-| `VIEW_AUDIT_LOG` | View Audit Log | `ViewAuditLogs` | |
+| `VIEW_AUDIT_LOG` | View Audit Log | — | **DROP** (see below) |
 | `USE_APP_COMMANDS` | Use Application Commands | — | **DROP** |
 | `PRIORITY_SPEAKER` | Priority Speaker | — | **DROP** |
 | `SEND_TTS` | Send TTS Messages | — | **DROP** |
 
 Any Discord permission not in the table is treated as an explicit **drop** and logged — never a silent loss.
+
+`VIEW_AUDIT_LOG` is a special case: Stoat's enum does define a real bit for it (`ViewAuditLogs`, `1<<40`), but Stoat's own web client (`stoatchat/for-web`, `ChannelPermissionsEditor.tsx`) has no UI toggle for it at all -- it is the only permission in this table with no path to grant it through normal server administration. The only way to set it on any role is a raw API call from the server owner's own token (owner calls bypass the "can't grant what you don't have" check entirely, `crates/core/permissions/src/impl.rs`), which the daemon never holds and has no reason to. Treated as unreachable in practice and dropped, same as a true no-equivalent permission.
 
 ---
 

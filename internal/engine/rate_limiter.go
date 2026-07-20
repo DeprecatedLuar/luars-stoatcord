@@ -24,27 +24,36 @@ func NewGlobalRateLimiter(minInterval time.Duration) *GlobalRateLimiter {
 // Wait blocks until the shared limiter allows the next remote call, honoring
 // both the minimum-interval floor and any active Backoff window, or returns
 // ctx.Err() if the context is done first.
+//
+// It re-checks nextAllowed after every sleep instead of committing to a
+// duration computed once at call time: a concurrent caller's Backoff (from
+// its own 429) can land while this caller is already asleep on an
+// earlier-reserved slot, and that extended window must still be honored, or
+// a burst of concurrent callers all fire back into Stoat's still-active
+// punish window regardless of the backoff.
 func (l *GlobalRateLimiter) Wait(ctx context.Context) error {
-	l.mu.Lock()
-	now := time.Now()
-	wait := l.nextAllowed.Sub(now)
-	next := now
-	if l.nextAllowed.After(next) {
-		next = l.nextAllowed
-	}
-	l.nextAllowed = next.Add(l.minInterval)
-	l.mu.Unlock()
+	for {
+		l.mu.Lock()
+		now := time.Now()
+		wait := l.nextAllowed.Sub(now)
+		if wait <= 0 {
+			next := now
+			if l.nextAllowed.After(next) {
+				next = l.nextAllowed
+			}
+			l.nextAllowed = next.Add(l.minInterval)
+			l.mu.Unlock()
+			return nil
+		}
+		l.mu.Unlock()
 
-	if wait <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
 	}
 }
 

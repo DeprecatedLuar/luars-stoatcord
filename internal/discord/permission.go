@@ -41,17 +41,19 @@ var bitsToCanonical = map[int64]canonical.Permission{
 	discordgo.PermissionBanMembers:             canonical.PermBanMembers,
 	discordgo.PermissionModerateMembers:        canonical.PermTimeoutMembers,
 	discordgo.PermissionMentionEveryone:        canonical.PermMentionEveryone,
-	discordgo.PermissionViewAuditLogs:          canonical.PermViewAuditLog,
 }
 
 // bitsDropped names Discord permission bits that are recognized but have no
-// canonical/Stoat equivalent (spec 4 explicit drops, plus Administrator --
-// out of scope, not represented in the canonical vocabulary at all).
+// reachable canonical/Stoat equivalent (spec 4 explicit drops, plus
+// Administrator -- out of scope, not represented in the canonical vocabulary
+// at all). ViewAuditLogs has a real Stoat bit but no UI path to grant it on
+// any role (see canonical.PermViewAuditLog), so it's treated as a drop too.
 var bitsDropped = map[int64]string{
 	discordgo.PermissionUseApplicationCommands: string(canonical.PermUseAppCommands),
 	discordgo.PermissionVoicePrioritySpeaker:   string(canonical.PermPrioritySpeaker),
 	discordgo.PermissionSendTTSMessages:        string(canonical.PermSendTTS),
 	discordgo.PermissionAdministrator:          "ADMINISTRATOR",
+	discordgo.PermissionViewAuditLogs:          string(canonical.PermViewAuditLog),
 }
 
 // PermissionsFromBits decodes a Discord permission bitmask into canonical
