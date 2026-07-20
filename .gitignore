@@ -50,6 +50,12 @@ logs
 *.mp4
 *.kra
 
+# stoatcord runtime data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # Purpose and planning files
 vision.md
 CLAUDE.md
