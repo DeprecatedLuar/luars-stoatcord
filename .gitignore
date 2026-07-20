@@ -56,6 +56,9 @@ logs
 *.db-wal
 *.db-shm
 
+# graphify output
+graphify-out/
+
 # Purpose and planning files
 vision.md
 CLAUDE.md

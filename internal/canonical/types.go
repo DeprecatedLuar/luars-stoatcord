@@ -1,0 +1,72 @@
+package canonical
+
+// Entity types (spec 3): the neutral shape every platform translator reads
+// from and writes to. No discordgo or revolt types appear here.
+
+// Server is the mirrored guild/server itself.
+type Server struct {
+	ID          string
+	Name        string
+	Description string
+	IconRef     string
+	BannerRef   string
+}
+
+// Category is a server-level ordered list of channel ids (spec 6): moving a
+// channel between categories mutates this list, never a Channel field.
+type Category struct {
+	ID         string
+	Name       string
+	ChannelIDs []string
+}
+
+// ChannelType is the canonical channel kind after flattening (spec 6):
+// announcement/stage/forum collapse onto these two.
+type ChannelType string
+
+const (
+	ChannelTypeText  ChannelType = "text"
+	ChannelTypeVoice ChannelType = "voice"
+)
+
+// Channel is a single mirrored channel. Overwrites is keyed by canonical
+// role id; category membership lives on Category.ChannelIDs, not here.
+type Channel struct {
+	ID         string
+	Name       string
+	Type       ChannelType
+	CategoryID string
+	Position   int
+	Overwrites map[string]Overwrite
+}
+
+// Role is a mirrored server role. Permissions is tri-state per spec 3 /
+// Phase 0 finding (Stoat roles carry {a: allow, d: deny} too).
+type Role struct {
+	ID          string
+	Name        string
+	Colour      string
+	Hoist       bool
+	Rank        int
+	Permissions Overwrite
+}
+
+// Emoji is a custom emoji, auto-created on first use (spec 6).
+type Emoji struct {
+	ID       string
+	Name     string
+	Animated bool
+	NSFW     bool
+}
+
+// Message is a single mirrored message, posted via masquerade (spec 7) --
+// there is no canonical "author" identity beyond the display fields below.
+type Message struct {
+	ID              string
+	ChannelID       string
+	AuthorName      string
+	AuthorAvatarRef string
+	AuthorColour    string
+	Content         string
+	AttachmentRefs  []string
+}
