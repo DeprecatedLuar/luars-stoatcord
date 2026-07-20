@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
 
 func TestMappingStore_Get_NotFoundReturnsZeroValue(t *testing.T) {
 	st := openTestDB(t)
@@ -125,6 +129,36 @@ func TestMappingStore_UnknownEntityType_ReturnsError(t *testing.T) {
 
 	if _, err := st.Get("bogus", "id-1"); err == nil {
 		t.Fatal("expected an error for an entity type with no mapping table")
+	}
+}
+
+// Regression for a live-reproduced bug (Phase 4): a burst of near-simultaneous
+// role events, each on its own engine workerKey goroutine, hit the store
+// concurrently and got SQLITE_BUSY because the pool allowed multiple
+// connections to race for SQLite's single writer lock with no busy_timeout
+// to fall back on. Open now caps the pool to one connection and sets
+// busy_timeout as a backstop.
+func TestMappingStore_ConcurrentWritePending_NoSQLiteBusy(t *testing.T) {
+	st := openTestDB(t)
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("role-%d", i)
+			if err := st.WritePending("role", id, "{}"); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("concurrent WritePending failed: %v", err)
 	}
 }
 
