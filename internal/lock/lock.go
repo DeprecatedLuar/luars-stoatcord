@@ -11,6 +11,9 @@ import (
 // ErrLocked is returned by Acquire when another process already holds the lock.
 var ErrLocked = errors.New("lock: already held by another process")
 
+// lockFileMode restricts the lock file to the owning user.
+const lockFileMode = 0o600
+
 // Lock is an exclusive advisory lock held on a file for the life of a process.
 // The kernel releases it automatically if the process dies, so no stale
 // lock file can block a restart.
@@ -21,7 +24,7 @@ type Lock struct {
 // Acquire takes a non-blocking exclusive flock on path, creating it if needed.
 // It returns ErrLocked if another live process already holds it.
 func Acquire(path string) (*Lock, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, lockFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("lock: open %s: %w", path, err)
 	}

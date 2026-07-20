@@ -26,7 +26,7 @@ func TestOpen_FreshDB_CreatesAllTables(t *testing.T) {
 	}
 	for _, table := range want {
 		var name string
-		err := st.DB.QueryRow(
+		err := st.db.QueryRow(
 			`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
 		).Scan(&name)
 		if err != nil {
@@ -41,7 +41,7 @@ func TestSchema_RoundTripsSampleRowPerMappingTable(t *testing.T) {
 	for _, table := range []string{
 		"server_map", "category_map", "channel_map", "role_map", "emoji_map",
 	} {
-		_, err := st.DB.Exec(
+		_, err := st.db.Exec(
 			`INSERT INTO `+table+` (discord_id, stoat_id, status, canonical_state) VALUES (?, ?, ?, ?)`,
 			"discord-1", nil, "pending", `{"name":"sample"}`,
 		)
@@ -50,7 +50,7 @@ func TestSchema_RoundTripsSampleRowPerMappingTable(t *testing.T) {
 		}
 
 		var discordID, status string
-		err = st.DB.QueryRow(
+		err = st.db.QueryRow(
 			`SELECT discord_id, status FROM `+table+` WHERE discord_id = ?`, "discord-1",
 		).Scan(&discordID, &status)
 		if err != nil {
@@ -65,14 +65,14 @@ func TestSchema_RoundTripsSampleRowPerMappingTable(t *testing.T) {
 func TestSchema_RoundTripsMessageMapAndChannelCursor(t *testing.T) {
 	st := openTestDB(t)
 
-	if _, err := st.DB.Exec(
+	if _, err := st.db.Exec(
 		`INSERT INTO channel_map (discord_id, status, canonical_state) VALUES (?, ?, ?)`,
 		"channel-1", "active", "{}",
 	); err != nil {
 		t.Fatalf("insert channel_map: %v", err)
 	}
 
-	if _, err := st.DB.Exec(
+	if _, err := st.db.Exec(
 		`INSERT INTO message_map (discord_msg_id, stoat_msg_id, channel_id) VALUES (?, ?, ?)`,
 		"msg-1", "stoat-msg-1", "channel-1",
 	); err != nil {
@@ -80,7 +80,7 @@ func TestSchema_RoundTripsMessageMapAndChannelCursor(t *testing.T) {
 	}
 
 	var stoatMsgID string
-	if err := st.DB.QueryRow(
+	if err := st.db.QueryRow(
 		`SELECT stoat_msg_id FROM message_map WHERE discord_msg_id = ?`, "msg-1",
 	).Scan(&stoatMsgID); err != nil {
 		t.Fatalf("select message_map: %v", err)
@@ -89,7 +89,7 @@ func TestSchema_RoundTripsMessageMapAndChannelCursor(t *testing.T) {
 		t.Errorf("message_map round-trip mismatch: got %s", stoatMsgID)
 	}
 
-	if _, err := st.DB.Exec(
+	if _, err := st.db.Exec(
 		`INSERT INTO channel_cursor (channel_id, last_synced_discord_msg_id) VALUES (?, ?)`,
 		"channel-1", "msg-1",
 	); err != nil {
@@ -97,7 +97,7 @@ func TestSchema_RoundTripsMessageMapAndChannelCursor(t *testing.T) {
 	}
 
 	var cursor string
-	if err := st.DB.QueryRow(
+	if err := st.db.QueryRow(
 		`SELECT last_synced_discord_msg_id FROM channel_cursor WHERE channel_id = ?`, "channel-1",
 	).Scan(&cursor); err != nil {
 		t.Fatalf("select channel_cursor: %v", err)
@@ -110,7 +110,7 @@ func TestSchema_RoundTripsMessageMapAndChannelCursor(t *testing.T) {
 func TestSchema_RoundTripsOpQueue(t *testing.T) {
 	st := openTestDB(t)
 
-	res, err := st.DB.Exec(
+	res, err := st.db.Exec(
 		`INSERT INTO op_queue (op_type, payload, status) VALUES (?, ?, ?)`,
 		"channel.create", `{"discord_id":"channel-1"}`, "pending",
 	)
@@ -123,7 +123,7 @@ func TestSchema_RoundTripsOpQueue(t *testing.T) {
 	}
 
 	var opType, status string
-	if err := st.DB.QueryRow(
+	if err := st.db.QueryRow(
 		`SELECT op_type, status FROM op_queue WHERE id = ?`, id,
 	).Scan(&opType, &status); err != nil {
 		t.Fatalf("select op_queue: %v", err)
@@ -150,7 +150,7 @@ func TestDeployedMigration_AddsColumnWithoutLosingExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open v1: %v", err)
 	}
-	if _, err := db1.DB.Exec(`INSERT INTO widget (id, name) VALUES (1, 'pre-existing')`); err != nil {
+	if _, err := db1.db.Exec(`INSERT INTO widget (id, name) VALUES (1, 'pre-existing')`); err != nil {
 		t.Fatalf("insert pre-existing row: %v", err)
 	}
 	db1.Close()
@@ -170,21 +170,21 @@ func TestDeployedMigration_AddsColumnWithoutLosingExistingData(t *testing.T) {
 	defer db2.Close()
 
 	var name string
-	if err := db2.DB.QueryRow(`SELECT name FROM widget WHERE id = 1`).Scan(&name); err != nil {
+	if err := db2.db.QueryRow(`SELECT name FROM widget WHERE id = 1`).Scan(&name); err != nil {
 		t.Fatalf("pre-existing row lost after migration: %v", err)
 	}
 	if name != "pre-existing" {
 		t.Errorf("pre-existing row corrupted: got name %q", name)
 	}
 
-	if _, err := db2.DB.Exec(
+	if _, err := db2.db.Exec(
 		`INSERT INTO widget (id, name, description) VALUES (2, 'new', 'has description column')`,
 	); err != nil {
 		t.Errorf("new column from deployed migration not usable: %v", err)
 	}
 
 	var count int
-	if err := db2.DB.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, "0001_widget.sql").Scan(&count); err != nil {
+	if err := db2.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, "0001_widget.sql").Scan(&count); err != nil {
 		t.Fatalf("check schema_migrations: %v", err)
 	}
 	if count != 1 {

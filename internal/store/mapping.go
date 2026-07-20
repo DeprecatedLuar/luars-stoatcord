@@ -5,6 +5,14 @@ import (
 	"fmt"
 )
 
+// Mapping row status values. Mirrors internal/engine's status vocabulary
+// without importing it, so the dependency stays one-directional (engine
+// depends on Store, not the reverse).
+const (
+	statusPending = "pending"
+	statusActive  = "active"
+)
+
 // mappingTables maps each canonical entity type (spec 3) to its table name.
 // All five share the same shape (discord_id, stoat_id, status,
 // canonical_state, timestamps); message_map has its own shape and is out of
@@ -46,7 +54,7 @@ func (s *Store) Get(entityType, discordID string) (Mapping, error) {
 
 	var stoatID sql.NullString
 	var status, canonicalState string
-	err = s.DB.QueryRow(
+	err = s.db.QueryRow(
 		`SELECT stoat_id, status, canonical_state FROM `+table+` WHERE discord_id = ?`, discordID,
 	).Scan(&stoatID, &status, &canonicalState)
 	if err == sql.ErrNoRows {
@@ -75,14 +83,14 @@ func (s *Store) WritePending(entityType, discordID, canonicalState string) error
 		return err
 	}
 
-	_, err = s.DB.Exec(
+	_, err = s.db.Exec(
 		`INSERT INTO `+table+` (discord_id, stoat_id, status, canonical_state)
-		 VALUES (?, NULL, 'pending', ?)
+		 VALUES (?, NULL, ?, ?)
 		 ON CONFLICT (discord_id) DO UPDATE SET
-		   status = 'pending',
+		   status = ?,
 		   canonical_state = excluded.canonical_state,
 		   updated_at = unixepoch()`,
-		discordID, canonicalState,
+		discordID, statusPending, canonicalState, statusPending,
 	)
 	if err != nil {
 		return fmt.Errorf("store: write pending %s %s: %w", entityType, discordID, err)
@@ -98,9 +106,9 @@ func (s *Store) Confirm(entityType, discordID, stoatID string) error {
 		return err
 	}
 
-	_, err = s.DB.Exec(
-		`UPDATE `+table+` SET stoat_id = ?, status = 'active', updated_at = unixepoch() WHERE discord_id = ?`,
-		stoatID, discordID,
+	_, err = s.db.Exec(
+		`UPDATE `+table+` SET stoat_id = ?, status = ?, updated_at = unixepoch() WHERE discord_id = ?`,
+		stoatID, statusActive, discordID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: confirm %s %s: %w", entityType, discordID, err)
@@ -115,7 +123,7 @@ func (s *Store) Remove(entityType, discordID string) error {
 		return err
 	}
 
-	_, err = s.DB.Exec(`DELETE FROM `+table+` WHERE discord_id = ?`, discordID)
+	_, err = s.db.Exec(`DELETE FROM `+table+` WHERE discord_id = ?`, discordID)
 	if err != nil {
 		return fmt.Errorf("store: remove %s %s: %w", entityType, discordID, err)
 	}
@@ -125,9 +133,9 @@ func (s *Store) Remove(entityType, discordID string) error {
 // Enqueue persists an op that couldn't be applied while degraded, for later
 // durable-queue drain (Phase 7).
 func (s *Store) Enqueue(opType, payload string) error {
-	_, err := s.DB.Exec(
-		`INSERT INTO op_queue (op_type, payload, status) VALUES (?, ?, 'pending')`,
-		opType, payload,
+	_, err := s.db.Exec(
+		`INSERT INTO op_queue (op_type, payload, status) VALUES (?, ?, ?)`,
+		opType, payload, statusPending,
 	)
 	if err != nil {
 		return fmt.Errorf("store: enqueue %s: %w", opType, err)

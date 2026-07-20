@@ -10,6 +10,9 @@ import (
 	"github.com/luar/stoatcord/internal/canonical"
 )
 
+// discordPermissionBits is the width of Discord's permission bitmask.
+const discordPermissionBits = 64
+
 // bitsToCanonical maps each Discord permission bit with a canonical
 // equivalent (spec 4) to that Permission. Values are discordgo's own
 // exported constants, never hand-copied.
@@ -57,7 +60,7 @@ var bitsDropped = map[int64]string{
 // lost (spec 4).
 func PermissionsFromBits(bits int64, logger *slog.Logger) []canonical.Permission {
 	var perms []canonical.Permission
-	for bitPos := range 64 {
+	for bitPos := range discordPermissionBits {
 		mask := int64(1) << uint(bitPos)
 		if bits&mask == 0 {
 			continue

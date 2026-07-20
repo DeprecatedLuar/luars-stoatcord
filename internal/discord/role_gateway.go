@@ -44,19 +44,10 @@ func BuildRoleOp(kind engine.OpKind, r *discordgo.Role, stoatServerID string, ma
 		Apply: func(ctx context.Context) (string, error) {
 			stoatRole := canonicalRole.ToStoat(logger)
 
-			mapping, err := mappings.Get(string(engine.EntityRole), r.ID)
-			if err != nil {
-				return "", err
-			}
-			// See discord.BuildChannelOp: a pending row has no usable
-			// StoatID yet.
-			if mapping.Found && mapping.Status == engine.StatusActive {
-				if err := writer.EditRole(ctx, stoatServerID, mapping.StoatID, stoatRole); err != nil {
-					return "", err
-				}
-				return mapping.StoatID, nil
-			}
-			return writer.CreateRole(ctx, stoatServerID, stoatRole)
+			return applyCreateOrEdit(mappings, engine.EntityRole, r.ID,
+				func(stoatID string) error { return writer.EditRole(ctx, stoatServerID, stoatID, stoatRole) },
+				func() (string, error) { return writer.CreateRole(ctx, stoatServerID, stoatRole) },
+			)
 		},
 	}
 }
@@ -69,17 +60,9 @@ func BuildRoleDeleteOp(discordRoleID, stoatServerID string, mappings MappingRead
 		EntityType: engine.EntityRole,
 		DiscordID:  discordRoleID,
 		Apply: func(ctx context.Context) (string, error) {
-			mapping, err := mappings.Get(string(engine.EntityRole), discordRoleID)
-			if err != nil {
-				return "", err
-			}
-			if !mapping.Found || mapping.Status != engine.StatusActive {
-				return "", nil
-			}
-			if err := writer.DeleteRole(ctx, stoatServerID, mapping.StoatID); err != nil {
-				return "", err
-			}
-			return "", nil
+			return applyDelete(mappings, engine.EntityRole, discordRoleID,
+				func(stoatID string) error { return writer.DeleteRole(ctx, stoatServerID, stoatID) },
+			)
 		},
 	}
 }

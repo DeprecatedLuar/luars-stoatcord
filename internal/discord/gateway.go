@@ -70,23 +70,13 @@ func BuildChannelOp(kind engine.OpKind, ch *discordgo.Channel, stoatServerID str
 			}
 			stoatCh.Overwrites = resolved
 
-			mapping, err := mappings.Get(string(engine.EntityChannel), ch.ID)
-			if err != nil {
-				return "", err
-			}
-			// Found alone isn't enough: a pending row (create written but
-			// not yet remote-confirmed) has an empty StoatID. Reading it
-			// here would send Stoat a PATCH to "/channels/" with no id.
-			// The engine now serializes all ops for a given entity, so
-			// this should only ever be hit by a stale pending row left
-			// over from a crash, not a live in-flight create.
-			if mapping.Found && mapping.Status == engine.StatusActive {
-				if err := writer.EditChannel(ctx, mapping.StoatID, stoatCh); err != nil {
-					return "", err
-				}
-				return mapping.StoatID, nil
-			}
-			return writer.CreateChannel(ctx, stoatServerID, stoatCh)
+			// The engine now serializes all ops for a given entity, so a
+			// stale pending row here should only ever be left over from a
+			// crash, not a live in-flight create.
+			return applyCreateOrEdit(mappings, engine.EntityChannel, ch.ID,
+				func(stoatID string) error { return writer.EditChannel(ctx, stoatID, stoatCh) },
+				func() (string, error) { return writer.CreateChannel(ctx, stoatServerID, stoatCh) },
+			)
 		},
 	}
 	return op, true
@@ -101,20 +91,46 @@ func BuildChannelDeleteOp(discordChannelID string, mappings MappingReader, write
 		EntityType: engine.EntityChannel,
 		DiscordID:  discordChannelID,
 		Apply: func(ctx context.Context) (string, error) {
-			mapping, err := mappings.Get(string(engine.EntityChannel), discordChannelID)
-			if err != nil {
-				return "", err
-			}
-			// See BuildChannelOp: a pending row has no usable StoatID.
-			if !mapping.Found || mapping.Status != engine.StatusActive {
-				return "", nil
-			}
-			if err := writer.DeleteChannel(ctx, mapping.StoatID); err != nil {
-				return "", err
-			}
-			return "", nil
+			return applyDelete(mappings, engine.EntityChannel, discordChannelID,
+				func(stoatID string) error { return writer.DeleteChannel(ctx, stoatID) },
+			)
 		},
 	}
+}
+
+// applyCreateOrEdit implements the "found & active -> edit; else -> create"
+// branch shared by every entity's Apply closure (see BuildChannelOp,
+// BuildRoleOp): a pending row (create written but not yet remote-confirmed)
+// has an empty StoatID, so only an active mapping is eligible for edit.
+func applyCreateOrEdit(mappings MappingReader, entityType engine.EntityType, discordID string, edit func(stoatID string) error, create func() (string, error)) (string, error) {
+	mapping, err := mappings.Get(string(entityType), discordID)
+	if err != nil {
+		return "", err
+	}
+	if mapping.Found && mapping.Status == engine.StatusActive {
+		if err := edit(mapping.StoatID); err != nil {
+			return "", err
+		}
+		return mapping.StoatID, nil
+	}
+	return create()
+}
+
+// applyDelete implements the "no-op unless actively mapped, else delete"
+// branch shared by every entity's delete Apply closure (see
+// BuildChannelDeleteOp, BuildRoleDeleteOp).
+func applyDelete(mappings MappingReader, entityType engine.EntityType, discordID string, del func(stoatID string) error) (string, error) {
+	mapping, err := mappings.Get(string(entityType), discordID)
+	if err != nil {
+		return "", err
+	}
+	if !mapping.Found || mapping.Status != engine.StatusActive {
+		return "", nil
+	}
+	if err := del(mapping.StoatID); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // resolveOverwriteRoleIDs re-keys a StoatOverwrite map from Discord role ids

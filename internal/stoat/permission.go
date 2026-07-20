@@ -18,14 +18,15 @@ type permissionsBody struct {
 	} `json:"permissions"`
 }
 
-// SetChannelPermissions sets a role's tri-state permission overwrite on a
-// channel. Pass roleID "" to edit the channel's default (everyone)
-// permissions.
-func (c *Client) SetChannelPermissions(ctx context.Context, channelID, roleID string, allow, deny uint64) error {
-	if roleID == "" {
-		roleID = "default"
-	}
+// defaultRoleID is the sentinel role ID for a channel's default (everyone)
+// permission overwrite.
+const defaultRoleID = "default"
 
+// putPermissions PUTs a tri-state permissions body to path (gap 2 / gap 4b:
+// the library's own helpers send the wrong shape for both channel and
+// server-role permission endpoints; both are bypassed in favor of a direct
+// Client.Request call with this body).
+func (c *Client) putPermissions(ctx context.Context, path string, allow, deny uint64) error {
 	var body permissionsBody
 	body.Permissions.Allow = allow
 	body.Permissions.Deny = deny
@@ -35,31 +36,23 @@ func (c *Client) SetChannelPermissions(ctx context.Context, channelID, roleID st
 		return fmt.Errorf("stoat: marshal permissions body: %w", err)
 	}
 
-	_, err = c.inner.Request(ctx, "PUT", "/channels/"+channelID+"/permissions/"+roleID, data)
-	if err != nil {
-		return fmt.Errorf("stoat: set channel %s permissions for role %s: %w", channelID, roleID, err)
+	if _, err := c.inner.Request(ctx, "PUT", path, data); err != nil {
+		return fmt.Errorf("stoat: set permissions at %s: %w", path, err)
 	}
 	return nil
 }
 
-// SetRolePermissions sets a role's tri-state server-level permissions (gap
-// 4b: the library's ServerSetRolePermissions sends the wrong
-// {"server":X,"channel":Y} shape; the live API's server.roles[id].permissions
-// is tri-state {a: allow, d: deny}, confirmed live -- see
-// implementation-history.md).
+// SetChannelPermissions sets a role's tri-state permission overwrite on a
+// channel. Pass roleID "" to edit the channel's default (everyone)
+// permissions.
+func (c *Client) SetChannelPermissions(ctx context.Context, channelID, roleID string, allow, deny uint64) error {
+	if roleID == "" {
+		roleID = defaultRoleID
+	}
+	return c.putPermissions(ctx, "/channels/"+channelID+"/permissions/"+roleID, allow, deny)
+}
+
+// SetRolePermissions sets a role's tri-state server-level permissions.
 func (c *Client) SetRolePermissions(ctx context.Context, serverID, roleID string, allow, deny uint64) error {
-	var body permissionsBody
-	body.Permissions.Allow = allow
-	body.Permissions.Deny = deny
-
-	data, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("stoat: marshal role permissions body: %w", err)
-	}
-
-	_, err = c.inner.Request(ctx, "PUT", "/servers/"+serverID+"/permissions/"+roleID, data)
-	if err != nil {
-		return fmt.Errorf("stoat: set server %s role %s permissions: %w", serverID, roleID, err)
-	}
-	return nil
+	return c.putPermissions(ctx, "/servers/"+serverID+"/permissions/"+roleID, allow, deny)
 }

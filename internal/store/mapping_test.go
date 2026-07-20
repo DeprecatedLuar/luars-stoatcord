@@ -136,7 +136,7 @@ func TestQueueStore_Enqueue_InsertsPendingRow(t *testing.T) {
 	}
 
 	var count int
-	if err := st.DB.QueryRow(
+	if err := st.db.QueryRow(
 		`SELECT COUNT(*) FROM op_queue WHERE op_type = ? AND status = 'pending'`, "channel.create",
 	).Scan(&count); err != nil {
 		t.Fatalf("query op_queue: %v", err)

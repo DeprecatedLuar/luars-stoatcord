@@ -17,7 +17,7 @@ const migrationsDir = "migrations"
 
 // Store wraps the SQLite connection used by every mapping table.
 type Store struct {
-	DB *sql.DB
+	db *sql.DB
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies
@@ -39,12 +39,12 @@ func openWithMigrations(path string, fsys fs.FS, dir string) (*Store, error) {
 		return nil, fmt.Errorf("store: migrate %s: %w", path, err)
 	}
 
-	return &Store{DB: db}, nil
+	return &Store{db: db}, nil
 }
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
-	return s.DB.Close()
+	return s.db.Close()
 }
 
 func applyMigrations(db *sql.DB, fsys fs.FS, dir string) error {
