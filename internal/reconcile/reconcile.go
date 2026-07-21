@@ -41,6 +41,7 @@ const foreignDryRun = true
 type StoatReader interface {
 	FetchServer(ctx context.Context, serverID string) (stoat.ServerInfo, error)
 	FetchChannel(ctx context.Context, channelID string) (stoat.ChannelInfo, error)
+	FetchSelfRoleIDs(ctx context.Context, serverID string) ([]string, error)
 }
 
 // Params bundles Bind's dependencies. Categories/Channels/Roles are
@@ -91,7 +92,7 @@ func Bind(ctx context.Context, p Params) error {
 	for i, c := range server.Categories {
 		stoatCategories[i] = identity{id: c.ID, name: c.Title}
 	}
-	if err := bindEntities(p, engine.EntityCategory, discordCategories, stoatCategories); err != nil {
+	if err := bindEntities(p, engine.EntityCategory, discordCategories, stoatCategories, ""); err != nil {
 		return err
 	}
 
@@ -113,7 +114,7 @@ func Bind(ctx context.Context, p Params) error {
 	for i, c := range p.Channels {
 		discordChannels[i] = identity{id: c.ID, name: c.Name, kind: string(c.Type)}
 	}
-	if err := bindEntities(p, engine.EntityChannel, discordChannels, stoatChannels); err != nil {
+	if err := bindEntities(p, engine.EntityChannel, discordChannels, stoatChannels, ""); err != nil {
 		return err
 	}
 
@@ -125,7 +126,49 @@ func Bind(ctx context.Context, p Params) error {
 	for i, r := range server.Roles {
 		stoatRoles[i] = identity{id: r.ID, name: r.Name}
 	}
-	return bindEntities(p, engine.EntityRole, discordRoles, stoatRoles)
+
+	protectedRoleID, err := botElevationRoleID(ctx, p, server.Roles)
+	if err != nil {
+		// Not fatal to the whole reconcile -- foreignDryRun means nothing
+		// destructive happens yet regardless -- but must be loud, since a
+		// silent miss here is exactly what would let the bot's own
+		// elevation role slip through the foreign-entity check once
+		// deletion is a real action.
+		p.Logger.Error("reconcile: could not determine bot's elevation role, it will not be exempted from foreign-entity reap", "error", err)
+	}
+
+	return bindEntities(p, engine.EntityRole, discordRoles, stoatRoles, protectedRoleID)
+}
+
+// botElevationRoleID returns the stoat id of the bot's own highest-ranked
+// role (lowest Rank value -- Stoat ranks ascend from 0 at the top, ground
+// truth crates/core/permissions/src/impl.rs's get_ranking/rank check) among
+// the roles the bot's Stoat member currently wears. That role must never be
+// treated as a foreign, reapable entity: losing it strips the bot's
+// permission elevation and it can no longer write role/permission changes
+// at all (see implementation-plan.md's live-testing findings).
+func botElevationRoleID(ctx context.Context, p Params, liveRoles []stoat.RoleInfo) (string, error) {
+	selfRoleIDs, err := p.Reader.FetchSelfRoleIDs(ctx, p.ServerID)
+	if err != nil {
+		return "", fmt.Errorf("fetch self role ids: %w", err)
+	}
+	self := make(map[string]bool, len(selfRoleIDs))
+	for _, id := range selfRoleIDs {
+		self[id] = true
+	}
+
+	best := ""
+	bestRank := 0
+	for _, r := range liveRoles {
+		if !self[r.ID] {
+			continue
+		}
+		if best == "" || r.Rank < bestRank {
+			best = r.ID
+			bestRank = r.Rank
+		}
+	}
+	return best, nil
 }
 
 // bindEntities runs the bind pass for one entity type: Discord entities with
@@ -142,7 +185,10 @@ func Bind(ctx context.Context, p Params) error {
 // this case (a live-fetch miss there is logged and left untouched) --
 // detecting and clearing a dead mapping is identity work, squarely Bind's
 // job, not attribute-drift verification's.
-func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatItems []identity) error {
+// protected, when non-empty, is a stoat id that must never be flagged as a
+// foreign entity regardless of claim state (the bot's own elevation role;
+// see botElevationRoleID). Empty for every entity type but role.
+func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatItems []identity, protected string) error {
 	liveStoatIDs := make(map[string]bool, len(stoatItems))
 	for _, s := range stoatItems {
 		liveStoatIDs[s.id] = true
@@ -210,6 +256,10 @@ func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatIte
 	}
 
 	for _, s := range available {
+		if s.id == protected {
+			p.Logger.Info("reconcile: bot's own elevation role, exempt from foreign-entity reap", "entity_type", entityType, "stoat_id", s.id, "name", s.name)
+			continue
+		}
 		if foreignDryRun {
 			p.Logger.Warn("reconcile: foreign entity, would delete (dry run)", "entity_type", entityType, "stoat_id", s.id, "name", s.name)
 		}

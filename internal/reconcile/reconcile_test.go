@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/luar/stoatcord/internal/canonical"
@@ -52,6 +53,8 @@ type fakeReader struct {
 	server      stoat.ServerInfo
 	channels    map[string]stoat.ChannelInfo
 	channelErrs map[string]error
+	selfRoleIDs []string
+	selfRoleErr error
 }
 
 func (f *fakeReader) FetchServer(ctx context.Context, serverID string) (stoat.ServerInfo, error) {
@@ -63,6 +66,10 @@ func (f *fakeReader) FetchChannel(ctx context.Context, channelID string) (stoat.
 		return stoat.ChannelInfo{}, err
 	}
 	return f.channels[channelID], nil
+}
+
+func (f *fakeReader) FetchSelfRoleIDs(ctx context.Context, serverID string) ([]string, error) {
+	return f.selfRoleIDs, f.selfRoleErr
 }
 
 func testLogger() *slog.Logger {
@@ -217,6 +224,48 @@ func TestBind_ForeignStoatEntity_NeverDeleted(t *testing.T) {
 	// logged, never deleted or bound to anything.
 	if len(mappings.rows) != 0 {
 		t.Fatalf("mappings = %+v, want empty (foreign entity must not be touched)", mappings.rows)
+	}
+}
+
+// Live-reproduced (see conversation notes on the "4 copies of roles" bug):
+// the bot's own elevation role has no Discord counterpart, so it's
+// unclaimed at the end of the role bind pass just like any other foreign
+// role -- but it must never be logged/treated as reapable, or the bot loses
+// the permission rank it needs to write anything at all.
+func TestBind_BotElevationRole_ExemptFromForeignReap(t *testing.T) {
+	mappings := newFakeMappings()
+	var logBuf bytes.Buffer
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			Roles: []stoat.RoleInfo{
+				{ID: "stoat-role-bot", Name: "Stoatcord", Rank: 0},
+				{ID: "stoat-role-native", Name: "SomeOtherNativeRole", Rank: 1},
+			},
+		},
+		selfRoleIDs: []string{"stoat-role-bot"},
+	}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Mappings: mappings,
+		Reader:   reader,
+		Logger:   slog.New(slog.NewTextHandler(&logBuf, nil)),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	for _, line := range strings.Split(logBuf.String(), "\n") {
+		if strings.Contains(line, "stoat_id=stoat-role-bot") && strings.Contains(line, "would delete") {
+			t.Fatalf("bot's own elevation role was logged as foreign/reapable:\n%s", line)
+		}
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "exempt from foreign-entity reap") {
+		t.Fatalf("expected an exemption log line for the bot's elevation role, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, `stoat_id=stoat-role-native`) || !strings.Contains(logs, "would delete") {
+		t.Fatalf("expected the genuinely foreign role to still be flagged, got:\n%s", logs)
 	}
 }
 

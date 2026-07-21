@@ -148,6 +148,24 @@ func (c *Client) FetchServer(ctx context.Context, serverID string) (ServerInfo, 
 	}, nil
 }
 
+// FetchSelfRoleIDs reads the roles the bot's own Stoat member currently
+// wears on serverID. Used by internal/reconcile to protect the bot's own
+// elevation role from foreign-entity reap: the bot must keep its
+// highest-ranked role or it loses the permission-elevation (rank check in
+// crates/core/permissions/src/impl.rs) needed to write any role/permission
+// change at all -- deleting it breaks the mirror irrecoverably.
+func (c *Client) FetchSelfRoleIDs(ctx context.Context, serverID string) ([]string, error) {
+	self, err := c.inner.FetchUser(ctx, "@me")
+	if err != nil {
+		return nil, fmt.Errorf("stoat: fetch self user: %w", err)
+	}
+	member, err := c.inner.ServerFetchMember(ctx, serverID, self.Id)
+	if err != nil {
+		return nil, fmt.Errorf("stoat: fetch self member on server %s: %w", serverID, err)
+	}
+	return member.Roles, nil
+}
+
 // FetchChannel reads a single channel's live state: name, canonical type,
 // and its default/role permission overwrites. Needed because FetchServer's
 // channel ids carry no attributes of their own.
