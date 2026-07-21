@@ -48,7 +48,22 @@ func (c *Client) DeleteChannel(ctx context.Context, channelID string) error {
 	return nil
 }
 
+// applyChannelOverwrites injects the bot's own elevation role self-grant
+// first (implementation-plan.md Phase 4.7 guarantee 2 -- unconditional,
+// every channel, not only ones whose default overwrite denies
+// ViewChannel), before any Discord-derived overwrite. First matters: a
+// later @everyone deny in overwrites would otherwise trigger Stoat's
+// revoke_all() and 403 the bot out of its own channel before the grant
+// ever lands. Skipped only if ResolveElevationRole hasn't cached a role
+// yet -- production startup hard-fails before this can happen (guarantee
+// 1), so this is a defensive no-op for callers (mainly tests) that never
+// resolved one.
 func (c *Client) applyChannelOverwrites(ctx context.Context, channelID string, overwrites map[string]canonical.StoatOverwrite) error {
+	if c.elevation != nil {
+		if err := c.SetChannelPermissions(ctx, channelID, c.elevation.id, GrantAllSafe, 0); err != nil {
+			return fmt.Errorf("stoat: inject elevation role self-grant on channel %s: %w", channelID, err)
+		}
+	}
 	for roleID, ow := range overwrites {
 		if err := c.SetChannelPermissions(ctx, channelID, roleID, ow.Allow, ow.Deny); err != nil {
 			return err

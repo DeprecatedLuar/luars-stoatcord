@@ -88,6 +88,71 @@ func TestCreateChannel_TextTypeAndAppliesOverwrites(t *testing.T) {
 	}
 }
 
+// Phase 4.7 guarantee 2: the bot's elevation role self-grant is injected
+// on every channel, unconditionally, first -- before any Discord-derived
+// overwrite.
+func TestCreateChannel_InjectsElevationSelfGrantFirst(t *testing.T) {
+	client, requests := newTestServer(t, func(mux *http.ServeMux, mu *sync.Mutex, reqs *[]recordedRequest) {
+		serverAndMemberHandlers(mux, `{"elevation": {"name": "Stoatcord", "rank": 0}}`, `["elevation"]`)
+		mux.HandleFunc("/servers/srv1/channels", func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*reqs = append(*reqs, recordedRequest{r.Method, r.URL.Path, nil})
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"_id":"chan1","name":"general"}`))
+		})
+		mux.HandleFunc("/channels/chan1/permissions/elevation", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := jsonBody(r)
+			mu.Lock()
+			*reqs = append(*reqs, recordedRequest{r.Method, r.URL.Path, body})
+			mu.Unlock()
+			w.Write([]byte(`{}`))
+		})
+		mux.HandleFunc("/channels/chan1/permissions/role1", func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*reqs = append(*reqs, recordedRequest{r.Method, r.URL.Path, nil})
+			mu.Unlock()
+			w.Write([]byte(`{}`))
+		})
+	})
+	if err := client.ResolveElevationRole(context.Background(), "srv1"); err != nil {
+		t.Fatalf("ResolveElevationRole: %v", err)
+	}
+
+	ch := canonical.StoatChannel{
+		Name: "general",
+		Type: "Text",
+		Overwrites: map[string]canonical.StoatOverwrite{
+			"role1": {Allow: 5, Deny: 2},
+		},
+	}
+	if _, err := client.CreateChannel(context.Background(), "srv1", ch); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	if len(*requests) != 3 {
+		t.Fatalf("got %d requests, want 3 (create + self-grant + role1 overwrite): %+v", len(*requests), *requests)
+	}
+	if (*requests)[1].path != "/channels/chan1/permissions/elevation" {
+		t.Fatalf("second request = %+v, want the elevation self-grant applied before any Discord-derived overwrite", (*requests)[1])
+	}
+	var grantBody struct {
+		Permissions struct {
+			Allow uint64 `json:"allow"`
+			Deny  uint64 `json:"deny"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal((*requests)[1].body, &grantBody); err != nil {
+		t.Fatalf("unmarshal self-grant body: %v", err)
+	}
+	if grantBody.Permissions.Allow != GrantAllSafe || grantBody.Permissions.Deny != 0 {
+		t.Fatalf("self-grant = %+v, want allow=%d deny=0", grantBody.Permissions, GrantAllSafe)
+	}
+	if (*requests)[2].path != "/channels/chan1/permissions/role1" {
+		t.Fatalf("third request = %+v, want role1's overwrite", (*requests)[2])
+	}
+}
+
 func TestCreateChannel_VoiceType(t *testing.T) {
 	var gotBody []byte
 	client, _ := newTestServer(t, func(mux *http.ServeMux, mu *sync.Mutex, reqs *[]recordedRequest) {
