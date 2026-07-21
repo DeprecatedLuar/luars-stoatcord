@@ -60,6 +60,50 @@ func TestReconcileLive_MatchingEntity_TrustsCacheAndStaysActive(t *testing.T) {
 	}
 }
 
+// A category's Position is derived from its index in an ordered list on
+// both sides (Discord sidebar order desired-side, Stoat's own Categories
+// array live-side) -- this must not be mistaken for drift when the two
+// lists actually agree, across more than one category.
+func TestReconcileLive_MatchingCategoryOrder_NoSpuriousDrift(t *testing.T) {
+	mappings := newFakeMappings()
+	mappings.WritePending("category", "dc-cat-a", "{}")
+	mappings.Confirm("category", "dc-cat-a", "stoat-cat-a")
+	mappings.WritePending("category", "dc-cat-b", "{}")
+	mappings.Confirm("category", "dc-cat-b", "stoat-cat-b")
+
+	catA := canonical.Category{ID: "dc-cat-a", Name: "A", Position: 0}
+	catB := canonical.Category{ID: "dc-cat-b", Name: "B", Position: 1}
+
+	logger, _ := testLoggerBuf()
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			Categories: []stoat.CategoryInfo{
+				{ID: "stoat-cat-a", Title: "A"},
+				{ID: "stoat-cat-b", Title: "B"},
+			},
+		},
+	}
+
+	err := ReconcileLive(context.Background(), Params{
+		ServerID:   "srv1",
+		GuildID:    "guild1",
+		Categories: []canonical.Category{catA, catB},
+		Mappings:   mappings,
+		Reader:     reader,
+		Logger:     logger,
+	})
+	if err != nil {
+		t.Fatalf("ReconcileLive: %v", err)
+	}
+
+	for _, id := range []string{"dc-cat-a", "dc-cat-b"} {
+		m, _ := mappings.Get("category", id)
+		if !m.Found || m.Status != engine.StatusActive {
+			t.Fatalf("category %s mapping = %+v, want active (matching order must not be flagged as drift)", id, m)
+		}
+	}
+}
+
 func TestReconcileLive_DriftedChannel_ForcesEmptyStateAndLogs(t *testing.T) {
 	mappings := newFakeMappings()
 	mappings.WritePending("channel", "dc-chan-1", "{}")

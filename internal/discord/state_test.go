@@ -41,6 +41,12 @@ func TestCategoriesFromState_OrdersByCategoryPosition(t *testing.T) {
 	if cats[0].ID != "cat-a" || cats[1].ID != "cat-z" {
 		t.Fatalf("order = [%s, %s], want [cat-a, cat-z] (must follow Discord Position, not id)", cats[0].ID, cats[1].ID)
 	}
+	// canonical.Category.Position must be the sorted index (0, 1, ...), not
+	// the raw Discord Position integer -- otherwise the gap between 1 and 5
+	// would leak into canonical state for no reason.
+	if cats[0].Position != 0 || cats[1].Position != 1 {
+		t.Fatalf("positions = [%d, %d], want [0, 1] (sorted index, not raw Discord Position)", cats[0].Position, cats[1].Position)
+	}
 }
 
 func TestWaitForGuildReady_ReturnsImmediatelyWhenAlreadyInState(t *testing.T) {

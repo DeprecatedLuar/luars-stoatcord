@@ -228,7 +228,7 @@ func reconcileCategoryLive(p Params, cat canonical.Category, liveCategories []st
 		return nil
 	}
 
-	live, found := findCategory(liveCategories, m.StoatID)
+	live, liveIndex, found := findCategory(liveCategories, m.StoatID)
 	if !found {
 		p.Logger.Warn("reconcile: live category missing from Stoat, skipping (out of scope for this pass)", "discord_id", cat.ID, "stoat_id", m.StoatID)
 		return nil
@@ -244,7 +244,12 @@ func reconcileCategoryLive(p Params, cat canonical.Category, liveCategories []st
 		liveChannelIDs = append(liveChannelIDs, discordChannelID)
 	}
 
-	liveCat := canonical.Category{ID: cat.ID, Name: live.Title, ChannelIDs: liveChannelIDs}
+	// liveIndex is the category's position within Stoat's own live-ordered
+	// categories array, mirroring how canonical.Category.Position is
+	// derived from Discord's sidebar order -- comparing that against the
+	// raw Stoat CategoryInfo (which carries no position field) would
+	// otherwise always mismatch once Position is set to anything but 0.
+	liveCat := canonical.Category{ID: cat.ID, Name: live.Title, ChannelIDs: liveChannelIDs, Position: liveIndex}
 	matches := reflect.DeepEqual(liveCat, cat)
 
 	desiredJSON, err := cat.CanonicalJSON()
@@ -254,11 +259,11 @@ func reconcileCategoryLive(p Params, cat canonical.Category, liveCategories []st
 	return repairMapping(p, engine.EntityCategory, cat.ID, m.StoatID, matches, desiredJSON)
 }
 
-func findCategory(categories []stoat.CategoryInfo, stoatID string) (stoat.CategoryInfo, bool) {
-	for _, c := range categories {
+func findCategory(categories []stoat.CategoryInfo, stoatID string) (stoat.CategoryInfo, int, bool) {
+	for i, c := range categories {
 		if c.ID == stoatID {
-			return c, true
+			return c, i, true
 		}
 	}
-	return stoat.CategoryInfo{}, false
+	return stoat.CategoryInfo{}, -1, false
 }

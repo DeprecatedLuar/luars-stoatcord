@@ -18,6 +18,10 @@ type Category struct {
 	ID         string
 	Name       string
 	ChannelIDs []string
+	// Position is this category's own index among all of the server's
+	// categories (sidebar order) -- distinct from Channel.Position, which
+	// orders channels within a single category.
+	Position int
 }
 
 // ChannelType is the canonical channel kind after flattening (spec 6):

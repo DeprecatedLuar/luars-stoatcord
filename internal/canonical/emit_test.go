@@ -120,21 +120,21 @@ func TestChannel_ToStoat_TextType(t *testing.T) {
 }
 
 func TestCategory_CanonicalJSON_PreservesChannelOrder(t *testing.T) {
-	c := Category{ID: "cat-1", Name: "General", ChannelIDs: []string{"c3", "c1", "c2"}}
+	c := Category{ID: "cat-1", Name: "General", ChannelIDs: []string{"c3", "c1", "c2"}, Position: 2}
 
 	got, err := c.CanonicalJSON()
 	if err != nil {
 		t.Fatalf("CanonicalJSON() error: %v", err)
 	}
 
-	const want = `{"id":"cat-1","name":"General","channel_ids":["c3","c1","c2"]}`
+	const want = `{"id":"cat-1","name":"General","channel_ids":["c3","c1","c2"],"position":2}`
 	if string(got) != want {
 		t.Errorf("CanonicalJSON() = %s, want %s", got, want)
 	}
 }
 
 func TestParseCategoryCanonicalJSON_RoundTripsCanonicalJSON(t *testing.T) {
-	c := Category{ID: "cat-1", Name: "General", ChannelIDs: []string{"c3", "c1", "c2"}}
+	c := Category{ID: "cat-1", Name: "General", ChannelIDs: []string{"c3", "c1", "c2"}, Position: 2}
 
 	data, err := c.CanonicalJSON()
 	if err != nil {
@@ -145,7 +145,7 @@ func TestParseCategoryCanonicalJSON_RoundTripsCanonicalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCategoryCanonicalJSON() error: %v", err)
 	}
-	if got.ID != c.ID || got.Name != c.Name || len(got.ChannelIDs) != 3 || got.ChannelIDs[0] != "c3" {
+	if got.ID != c.ID || got.Name != c.Name || len(got.ChannelIDs) != 3 || got.ChannelIDs[0] != "c3" || got.Position != 2 {
 		t.Fatalf("got %+v, want fields matching %+v", got, c)
 	}
 }

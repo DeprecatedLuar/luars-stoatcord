@@ -124,12 +124,13 @@ type categoryJSON struct {
 	ID         string   `json:"id"`
 	Name       string   `json:"name"`
 	ChannelIDs []string `json:"channel_ids"`
+	Position   int      `json:"position"`
 }
 
 // CanonicalJSON serializes the category. Unlike Channel's permission lists,
 // ChannelIDs is never sorted -- its order is meaningful sidebar position.
 func (c Category) CanonicalJSON() ([]byte, error) {
-	return json.Marshal(categoryJSON{ID: c.ID, Name: c.Name, ChannelIDs: c.ChannelIDs})
+	return json.Marshal(categoryJSON{ID: c.ID, Name: c.Name, ChannelIDs: c.ChannelIDs, Position: c.Position})
 }
 
 // ParseCategoryCanonicalJSON reverses Category.CanonicalJSON (same purpose
@@ -140,5 +141,5 @@ func ParseCategoryCanonicalJSON(data []byte) (Category, error) {
 	if err := json.Unmarshal(data, &cj); err != nil {
 		return Category{}, err
 	}
-	return Category{ID: cj.ID, Name: cj.Name, ChannelIDs: cj.ChannelIDs}, nil
+	return Category{ID: cj.ID, Name: cj.Name, ChannelIDs: cj.ChannelIDs, Position: cj.Position}, nil
 }

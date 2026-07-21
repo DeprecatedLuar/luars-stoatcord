@@ -39,7 +39,16 @@ func RegisterHandlers(session *discordgo.Session, guildID, stoatServerID string,
 		if e.GuildID != guildID {
 			return
 		}
-		eng.Submit(BuildChannelDeleteOp(e.Channel.ID, mappings, writer))
+		if e.Channel.Type == discordgo.ChannelTypeGuildCategory {
+			// BuildChannelDeleteOp would silently no-op here (a category id
+			// is never in channel_map) -- categories need their own delete
+			// op since Stoat has no per-category delete endpoint to call.
+			cats := categoriesFromState(s, guildID, logger)
+			snapshot := func() []canonical.Category { return cats }
+			eng.Submit(BuildCategoryDeleteOp(e.Channel.ID, snapshot, stoatServerID, mappings, writer, logger))
+		} else {
+			eng.Submit(BuildChannelDeleteOp(e.Channel.ID, mappings, writer))
+		}
 		submitCategoryOps(s, guildID, stoatServerID, mappings, writer, eng, logger)
 	})
 

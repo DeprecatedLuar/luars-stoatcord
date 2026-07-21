@@ -81,6 +81,13 @@ func categoriesFromState(s *discordgo.Session, guildID string, logger *slog.Logg
 	slices.SortFunc(cats, func(a, b canonical.Category) int {
 		return positions[a.ID] - positions[b.ID]
 	})
+	// Position is each category's index in this sort, not the raw Discord
+	// integer -- Discord's Position values can have gaps or ties, but the
+	// canonical order needs to be a clean, comparable 0..n-1 sequence so
+	// BuildCategoryOp's Diff can detect a reorder.
+	for i := range cats {
+		cats[i].Position = i
+	}
 	return cats
 }
 
