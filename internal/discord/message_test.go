@@ -3,6 +3,7 @@ package discord
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -18,6 +19,9 @@ type fakeMessageWriter struct {
 	editChannelID, editMessageID, editContent string
 
 	deleteChannelID, deleteMessageID string
+
+	uploadURLs []string
+	uploadErr  error
 }
 
 func (f *fakeMessageWriter) SendMessage(ctx context.Context, channelID string, msg canonical.StoatMessage) (string, error) {
@@ -36,6 +40,14 @@ func (f *fakeMessageWriter) DeleteMessage(ctx context.Context, channelID, messag
 	return nil
 }
 
+func (f *fakeMessageWriter) UploadFromURL(ctx context.Context, tag, url string) (string, error) {
+	if f.uploadErr != nil {
+		return "", f.uploadErr
+	}
+	f.uploadURLs = append(f.uploadURLs, url)
+	return "autumn-" + url, nil
+}
+
 func TestBuildMessageOp_SkipsEmptyContent(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
@@ -46,6 +58,130 @@ func TestBuildMessageOp_SkipsEmptyContent(t *testing.T) {
 	_, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, newFakeMappingReader(), &fakeMessageWriter{}, logger)
 	if ok {
 		t.Fatal("expected ok=false for empty content")
+	}
+}
+
+func TestBuildMessageOp_AllowsEmptyContentCreateWithAttachments(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "",
+		Author:      &discordgo.User{ID: "u1", Username: "alice"},
+		Attachments: []*discordgo.MessageAttachment{{ID: "att1", URL: "https://cdn.discordapp.com/attachments/1/2/photo.png"}},
+	}
+
+	_, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, newFakeMappingReader(), &fakeMessageWriter{}, logger)
+	if !ok {
+		t.Fatal("expected ok=true for attachment-only create")
+	}
+}
+
+func TestBuildMessageOp_StillSkipsEmptyContentUpdateWithAttachments(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "",
+		Author:      &discordgo.User{ID: "u1", Username: "alice"},
+		Attachments: []*discordgo.MessageAttachment{{ID: "att1", URL: "https://cdn.discordapp.com/attachments/1/2/photo.png"}},
+	}
+
+	_, ok := BuildMessageOp(engine.OpUpdate, session, "guild1", m, newFakeMappingReader(), &fakeMessageWriter{}, logger)
+	if ok {
+		t.Fatal("expected ok=false: an update's empty content is always Discord's partial-payload case, regardless of attachments")
+	}
+}
+
+func TestBuildMessageOp_ApplyUploadsAttachmentsBeforeSend(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "look at this",
+		Author: &discordgo.User{ID: "u1", Username: "alice"},
+		Attachments: []*discordgo.MessageAttachment{
+			{ID: "att1", URL: "https://cdn.discordapp.com/attachments/1/2/photo.png"},
+			{ID: "att2", URL: "https://cdn.discordapp.com/attachments/1/3/photo2.png"},
+		},
+	}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{sendReturns: "stoat-msg1"}
+	op, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	wantURLs := []string{"https://cdn.discordapp.com/attachments/1/2/photo.png", "https://cdn.discordapp.com/attachments/1/3/photo2.png"}
+	if len(writer.uploadURLs) != 2 || writer.uploadURLs[0] != wantURLs[0] || writer.uploadURLs[1] != wantURLs[1] {
+		t.Fatalf("uploadURLs = %v, want %v", writer.uploadURLs, wantURLs)
+	}
+	wantAttachments := []string{"autumn-" + wantURLs[0], "autumn-" + wantURLs[1]}
+	if len(writer.sendMsg.Attachments) != 2 || writer.sendMsg.Attachments[0] != wantAttachments[0] || writer.sendMsg.Attachments[1] != wantAttachments[1] {
+		t.Fatalf("sendMsg.Attachments = %v, want %v (uploaded Autumn ids, not raw URLs)", writer.sendMsg.Attachments, wantAttachments)
+	}
+}
+
+func TestBuildMessageOp_ApplyPropagatesAttachmentUploadError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "look at this",
+		Author:      &discordgo.User{ID: "u1", Username: "alice"},
+		Attachments: []*discordgo.MessageAttachment{{ID: "att1", URL: "https://cdn.discordapp.com/attachments/1/2/photo.png"}},
+	}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{uploadErr: fmt.Errorf("autumn unavailable")}
+	op, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	if _, err := op.Apply(context.Background()); err == nil {
+		t.Fatal("expected Apply to propagate the attachment upload error")
+	}
+	if writer.sendChannelID != "" {
+		t.Fatal("SendMessage should not have been called when an attachment upload fails")
+	}
+}
+
+func TestBuildMessageOp_DropsAttachmentsBeyondStoatCap(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+
+	var attachments []*discordgo.MessageAttachment
+	for i := range maxStoatAttachmentsPerMessage + 2 {
+		attachments = append(attachments, &discordgo.MessageAttachment{ID: fmt.Sprintf("att%d", i), URL: fmt.Sprintf("https://cdn.discordapp.com/attachments/1/%d/f.png", i)})
+	}
+	m := &discordgo.Message{ID: "msg1", ChannelID: "chan1", Content: "many files", Author: &discordgo.User{ID: "u1", Username: "alice"}, Attachments: attachments}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{sendReturns: "stoat-msg1"}
+	op, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(writer.uploadURLs) != maxStoatAttachmentsPerMessage {
+		t.Fatalf("uploaded %d attachments, want %d (cap)", len(writer.uploadURLs), maxStoatAttachmentsPerMessage)
 	}
 }
 

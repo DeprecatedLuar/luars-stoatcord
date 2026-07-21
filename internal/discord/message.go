@@ -16,7 +16,19 @@ type MessageWriter interface {
 	SendMessage(ctx context.Context, stoatChannelID string, msg canonical.StoatMessage) (string, error)
 	EditMessage(ctx context.Context, stoatChannelID, stoatMessageID, content string) error
 	DeleteMessage(ctx context.Context, stoatChannelID, stoatMessageID string) error
+	UploadFromURL(ctx context.Context, tag, url string) (string, error)
 }
+
+// attachmentAutumnTag is Autumn's upload tag for message attachments (spec
+// "Message pipeline details": Discord CDN links expire, so an attachment is
+// downloaded and re-uploaded here before it can be attached to a Stoat
+// message).
+const attachmentAutumnTag = "attachments"
+
+// maxStoatAttachmentsPerMessage is Stoat's own per-message attachment cap
+// (confirmed live, Phase 0) -- Discord allows more, so any beyond this are
+// dropped with a log rather than silently truncated.
+const maxStoatAttachmentsPerMessage = 5
 
 // BuildMessageOp translates a Discord message create/update event into an
 // engine.Op. One unified builder for create+update, deliberately mirroring
@@ -24,16 +36,18 @@ type MessageWriter interface {
 // behind an unmet dependency, so Apply resolves create-vs-edit fresh at
 // apply-time off mapping.HasStoatEntity(), never off Kind.
 //
-// ok is false if m.Content == "" -- this single rule covers two cases: a
-// message with no text content yet (attachment/embed-only, unsupported
-// until 5.3/5.4), and Discord's own partial MESSAGE_UPDATE payloads, which
-// omit content entirely (decoded by discordgo as "") when only non-content
-// fields changed (e.g. link-embed auto-populate). Forwarding that to
-// EditMessage would blank out the mirrored message's text. Discord does not
-// allow editing a message down to true emptiness via its own UI, so this
-// cannot drop a legitimate edit.
+// ok is false if m.Content == "" and (for an edit, always; for a create,
+// there are also no attachments). Content-empty-and-no-attachments covers a
+// message with nothing minable yet (embed-only), and Discord's own partial
+// MESSAGE_UPDATE payloads, which omit content entirely (decoded by
+// discordgo as "") when only non-content fields changed (e.g. link-embed
+// auto-populate). Forwarding that to EditMessage would blank out the
+// mirrored message's text, so an edit is skipped on empty content
+// regardless of attachments -- Discord does not allow editing a message's
+// attachments at all via its own UI, so attachments are a create-only
+// concern and this cannot drop a legitimate edit.
 func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m *discordgo.Message, mappings MappingReader, writer MessageWriter, logger *slog.Logger) (engine.Op, bool) {
-	if m.Content == "" {
+	if m.Content == "" && (kind != engine.OpCreate || len(m.Attachments) == 0) {
 		logger.Info("discord: skipping message op with empty content", "message_id", m.ID)
 		return engine.Op{}, false
 	}
@@ -48,6 +62,22 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 		replyToID = m.MessageReference.MessageID
 	}
 
+	// AttachmentRefs holds raw Discord CDN URLs at this point, not Stoat
+	// attachment ids -- resolving those needs an Autumn upload (network
+	// I/O), which is deferred to Apply below, mirroring how ReplyToID is
+	// left as a raw Discord id here and resolved to ReplyToStoatID only at
+	// apply-time. Anything beyond Stoat's own per-message cap is dropped
+	// with a log rather than silently truncated.
+	attachmentRefs := make([]string, 0, len(m.Attachments))
+	for i, att := range m.Attachments {
+		if i >= maxStoatAttachmentsPerMessage {
+			logger.Warn("discord: dropping attachment beyond Stoat's per-message cap",
+				"message_id", m.ID, "attachment_id", att.ID, "cap", maxStoatAttachmentsPerMessage)
+			continue
+		}
+		attachmentRefs = append(attachmentRefs, att.URL)
+	}
+
 	canonicalMsg := canonical.Message{
 		ID:              m.ID,
 		ChannelID:       m.ChannelID,
@@ -55,6 +85,7 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 		AuthorName:      authorName,
 		AuthorAvatarRef: authorAvatar,
 		AuthorColour:    authorColour,
+		AttachmentRefs:  attachmentRefs,
 		ReplyToID:       replyToID,
 	}
 
@@ -107,6 +138,21 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 				},
 				func() (string, error) {
 					stoatMsg := canonicalMsg.ToStoat()
+					// Resolve each attachment's Autumn id here, not in
+					// ToStoat -- canonical has no network access. AttachmentRefs
+					// carries raw Discord CDN URLs up to this point (set above);
+					// overwrite with the real uploaded ids before send.
+					if len(canonicalMsg.AttachmentRefs) > 0 {
+						uploadedIDs := make([]string, 0, len(canonicalMsg.AttachmentRefs))
+						for _, url := range canonicalMsg.AttachmentRefs {
+							id, err := writer.UploadFromURL(ctx, attachmentAutumnTag, url)
+							if err != nil {
+								return "", fmt.Errorf("discord: upload attachment for message %s: %w", m.ID, err)
+							}
+							uploadedIDs = append(uploadedIDs, id)
+						}
+						stoatMsg.Attachments = uploadedIDs
+					}
 					// Resolve the reply target's Stoat id here, not in
 					// ToStoat -- canonical has no mapping access.
 					if canonicalMsg.ReplyToID != "" {
