@@ -176,6 +176,17 @@ func main() {
 		logger.Error("timed out waiting for stoat gateway", "error", err)
 		os.Exit(1)
 	}
+
+	// Rank-0 elevation guard (implementation-plan.md Phase 4.7 guarantee 1,
+	// invariant 1): must run before reconcile/converge ever touch a role,
+	// since a bot not wearing rank 0 cannot manage roles/permissions at
+	// all -- degrading silently here would let every subsequent role write
+	// fail confusingly instead of failing loud once, up front.
+	if err := stoatClient.ResolveElevationRole(ctx, cfg.StoatServerID); err != nil {
+		logger.Error("stoat: bot does not hold the rank-0 elevation role, refusing to start", "error", err)
+		os.Exit(1)
+	}
+
 	logger.Info("running startup structure reconcile")
 	categories, channels, roles := discord.StructureFromState(discordSession, cfg.DiscordGuild, logger)
 	reconcileParams := reconcile.Params{

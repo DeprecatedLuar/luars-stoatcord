@@ -21,6 +21,10 @@ const libraryTickerInterval = time.Nanosecond
 // Client wraps *revolt.Client, working around known library gaps.
 type Client struct {
 	inner *revolt.Client
+	// elevation caches the bot's own elevation role, resolved once at
+	// startup by ResolveElevationRole. Set before any concurrent op
+	// traffic begins, so a plain field (no mutex) is safe.
+	elevation *elevationRole
 }
 
 // New constructs a Client against apiBase and immediately overrides

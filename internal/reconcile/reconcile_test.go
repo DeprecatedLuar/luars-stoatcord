@@ -50,11 +50,10 @@ func (f *fakeMappings) Remove(entityType, discordID string) error {
 }
 
 type fakeReader struct {
-	server      stoat.ServerInfo
-	channels    map[string]stoat.ChannelInfo
-	channelErrs map[string]error
-	selfRoleIDs []string
-	selfRoleErr error
+	server          stoat.ServerInfo
+	channels        map[string]stoat.ChannelInfo
+	channelErrs     map[string]error
+	elevationRoleID string
 }
 
 func (f *fakeReader) FetchServer(ctx context.Context, serverID string) (stoat.ServerInfo, error) {
@@ -68,8 +67,8 @@ func (f *fakeReader) FetchChannel(ctx context.Context, channelID string) (stoat.
 	return f.channels[channelID], nil
 }
 
-func (f *fakeReader) FetchSelfRoleIDs(ctx context.Context, serverID string) ([]string, error) {
-	return f.selfRoleIDs, f.selfRoleErr
+func (f *fakeReader) ElevationRoleID() string {
+	return f.elevationRoleID
 }
 
 type fakeWriter struct {
@@ -354,7 +353,7 @@ func TestBind_BotElevationRole_ExemptFromForeignReap(t *testing.T) {
 				{ID: "stoat-role-native", Name: "SomeOtherNativeRole", Rank: 1},
 			},
 		},
-		selfRoleIDs: []string{"stoat-role-bot"},
+		elevationRoleID: "stoat-role-bot",
 	}
 
 	err := Bind(context.Background(), Params{
@@ -379,6 +378,38 @@ func TestBind_BotElevationRole_ExemptFromForeignReap(t *testing.T) {
 	}
 	if !strings.Contains(logs, `stoat_id=stoat-role-native`) || !strings.Contains(logs, "would delete") {
 		t.Fatalf("expected the genuinely foreign role to still be flagged, got:\n%s", logs)
+	}
+}
+
+// Phase 4.7 guarantee 1, invariant 3b: the bot's elevation role must never
+// carry an active role_map row to a Discord role -- a mapped role at the
+// top of the hierarchy is a mirror target the mirror is (by invariant 2)
+// forbidden to ever write to, so Bind must refuse to operate rather than
+// silently leave that role permanently un-synced.
+func TestBind_ElevationRoleMappedToDiscordRole_HardFails(t *testing.T) {
+	mappings := newFakeMappings()
+	mappings.WritePending("role", "dc-role-1", "{}")
+	mappings.Confirm("role", "dc-role-1", "stoat-role-bot")
+
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			Roles: []stoat.RoleInfo{
+				{ID: "stoat-role-bot", Name: "Stoatcord", Rank: 0},
+			},
+		},
+		elevationRoleID: "stoat-role-bot",
+	}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Roles:    []canonical.Role{{ID: "dc-role-1", Name: "SomehowMapped"}},
+		Mappings: mappings,
+		Reader:   reader,
+		DryRun:   true,
+		Logger:   testLogger(),
+	})
+	if err == nil {
+		t.Fatal("Bind: want error, the elevation role must never be mapped to a Discord role")
 	}
 }
 

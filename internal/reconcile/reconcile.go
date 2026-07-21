@@ -35,7 +35,11 @@ const emptyCanonicalState = "{}"
 type StoatReader interface {
 	FetchServer(ctx context.Context, serverID string) (stoat.ServerInfo, error)
 	FetchChannel(ctx context.Context, channelID string) (stoat.ChannelInfo, error)
-	FetchSelfRoleIDs(ctx context.Context, serverID string) ([]string, error)
+	// ElevationRoleID returns the bot's own elevation role id, resolved
+	// once at startup by *internal/stoat.Client.ResolveElevationRole
+	// (implementation-plan.md Phase 4.7) -- Bind consumes that single
+	// cached source rather than re-resolving it itself.
+	ElevationRoleID() string
 }
 
 // StoatWriter is the subset of *internal/stoat.Client's delete methods
@@ -154,47 +158,40 @@ func Bind(ctx context.Context, p Params) error {
 		roleIDs[r.ID] = true
 	}
 
-	protectedRoleID, err := botElevationRoleID(ctx, p, server.Roles)
-	if err != nil {
+	protectedRoleID := p.Reader.ElevationRoleID()
+	if protectedRoleID == "" {
 		// Not fatal to the whole reconcile, but must be loud: with
 		// p.DryRun false, a silent miss here is exactly what would let
 		// the bot's own elevation role slip through the foreign-entity
-		// check and get deleted.
-		p.Logger.Error("reconcile: could not determine bot's elevation role, it will not be exempted from foreign-entity reap", "error", err)
+		// check and get deleted. Startup's ResolveElevationRole call is
+		// meant to have already made this fatal before Bind ever runs
+		// (implementation-plan.md Phase 4.7 guarantee 1) -- an empty id
+		// here means that guard was skipped or itself failed non-fatally.
+		p.Logger.Error("reconcile: bot's elevation role id is unresolved, it will not be exempted from foreign-entity reap")
+	} else if err := verifyElevationRoleUnmapped(p, discordRoles, protectedRoleID); err != nil {
+		return err
 	}
 
 	return bindEntities(ctx, p, engine.EntityRole, discordRoles, stoatRoles, roleIDs, protectedRoleID)
 }
 
-// botElevationRoleID returns the stoat id of the bot's own highest-ranked
-// role (lowest Rank value -- Stoat ranks ascend from 0 at the top, ground
-// truth crates/core/permissions/src/impl.rs's get_ranking/rank check) among
-// the roles the bot's Stoat member currently wears. That role must never be
-// treated as a foreign, reapable entity: losing it strips the bot's
-// permission elevation and it can no longer write role/permission changes
-// at all (see implementation-plan.md's live-testing findings).
-func botElevationRoleID(ctx context.Context, p Params, liveRoles []stoat.RoleInfo) (string, error) {
-	selfRoleIDs, err := p.Reader.FetchSelfRoleIDs(ctx, p.ServerID)
-	if err != nil {
-		return "", fmt.Errorf("fetch self role ids: %w", err)
-	}
-	self := make(map[string]bool, len(selfRoleIDs))
-	for _, id := range selfRoleIDs {
-		self[id] = true
-	}
-
-	best := ""
-	bestRank := 0
-	for _, r := range liveRoles {
-		if !self[r.ID] {
-			continue
+// verifyElevationRoleUnmapped hard-fails if the bot's own elevation role
+// already carries an active role_map row to a Discord role
+// (implementation-plan.md Phase 4.7 guarantee 1, invariant 3b): a mapped
+// role at the top of the hierarchy is a mirror target the bot cannot
+// safely manage (invariant 2 forbids writing to it at all), so reconcile
+// must stop rather than operate on an untrustworthy hierarchy.
+func verifyElevationRoleUnmapped(p Params, discordRoles []identity, protectedRoleID string) error {
+	for _, d := range discordRoles {
+		m, err := p.Mappings.Get(string(engine.EntityRole), d.id)
+		if err != nil {
+			return fmt.Errorf("reconcile: get mapping role %s: %w", d.id, err)
 		}
-		if best == "" || r.Rank < bestRank {
-			best = r.ID
-			bestRank = r.Rank
+		if m.Found && m.Status == engine.StatusActive && m.StoatID == protectedRoleID {
+			return fmt.Errorf("reconcile: bot's elevation role %s is mapped to discord role %s, refusing to operate on an untrustworthy hierarchy", protectedRoleID, d.id)
 		}
 	}
-	return best, nil
+	return nil
 }
 
 // bindEntities runs the bind pass for one entity type: Discord entities with

@@ -23,8 +23,17 @@ func (c *Client) CreateRole(ctx context.Context, serverID string, role canonical
 }
 
 // EditRole updates an existing role's fields and tri-state permissions.
+// Rank is clamped to at least minimumMirroredRank (implementation-plan.md
+// Phase 4.7 guarantee 1, invariant 3a): rank 0 is reserved for the bot's
+// own elevation role, so a mirrored role can never collide with or occupy
+// it. Refuses outright to write to the elevation role itself (invariant 2:
+// the mirror never edits rank 0, no rank change, no permission edit).
 func (c *Client) EditRole(ctx context.Context, serverID, roleID string, role canonical.StoatRole) error {
-	edit := (&revolt.EditRole{}).SetColor(role.Colour).IsHoist(role.Hoist).SetRank(role.Rank)
+	if c.isElevationRole(roleID) {
+		return fmt.Errorf("stoat: refusing to edit role %s, it is the bot's own elevation role", roleID)
+	}
+	rank := max(role.Rank, minimumMirroredRank)
+	edit := (&revolt.EditRole{}).SetColor(role.Colour).IsHoist(role.Hoist).SetRank(rank)
 	if err := c.inner.ServerEditRole(ctx, serverID, roleID, edit); err != nil {
 		return fmt.Errorf("stoat: edit role %s: %w", roleID, err)
 	}
@@ -34,8 +43,13 @@ func (c *Client) EditRole(ctx context.Context, serverID, roleID string, role can
 	return nil
 }
 
-// DeleteRole deletes a role by its Stoat id.
+// DeleteRole deletes a role by its Stoat id. Refuses outright to delete the
+// bot's own elevation role (implementation-plan.md Phase 4.7 guarantee 1,
+// invariant 2).
 func (c *Client) DeleteRole(ctx context.Context, serverID, roleID string) error {
+	if c.isElevationRole(roleID) {
+		return fmt.Errorf("stoat: refusing to delete role %s, it is the bot's own elevation role", roleID)
+	}
 	if err := c.inner.ServerDeleteRole(ctx, serverID, roleID); err != nil {
 		return fmt.Errorf("stoat: delete role %s: %w", roleID, err)
 	}

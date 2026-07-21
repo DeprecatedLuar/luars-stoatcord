@@ -119,6 +119,39 @@ func TestEditRole_UpdatesFieldsAndPermissions(t *testing.T) {
 	}
 }
 
+func TestEditRole_ClampsRankZeroToMinimumMirroredRank(t *testing.T) {
+	var mu sync.Mutex
+	var requests []recordedRequest
+
+	client, _ := newTestServer(t, func(mux *http.ServeMux, _ *sync.Mutex, _ *[]recordedRequest) {
+		mux.HandleFunc("/servers/srv1/roles/role1", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := jsonBody(r)
+			mu.Lock()
+			requests = append(requests, recordedRequest{r.Method, r.URL.Path, body})
+			mu.Unlock()
+			w.Write([]byte(`{}`))
+		})
+		mux.HandleFunc("/servers/srv1/permissions/role1", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{}`))
+		})
+	})
+
+	role := canonical.StoatRole{Name: "Everyone-ish", Rank: 0}
+	if err := client.EditRole(context.Background(), "srv1", "role1", role); err != nil {
+		t.Fatalf("EditRole: %v", err)
+	}
+
+	var editBody struct {
+		Rank int `json:"rank"`
+	}
+	if err := json.Unmarshal(requests[0].body, &editBody); err != nil {
+		t.Fatalf("unmarshal edit body: %v", err)
+	}
+	if editBody.Rank != minimumMirroredRank {
+		t.Fatalf("Rank = %d, want clamped to %d (rank 0 is reserved for the bot's elevation role)", editBody.Rank, minimumMirroredRank)
+	}
+}
+
 func TestDeleteRole_SendsDelete(t *testing.T) {
 	var mu sync.Mutex
 	var requests []recordedRequest
