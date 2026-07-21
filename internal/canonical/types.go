@@ -53,6 +53,10 @@ type Role struct {
 	Hoist       bool
 	Rank        int
 	Permissions Overwrite
+	// Privileged marks a role whose holders should bypass per-channel
+	// visibility restrictions (Discord's ADMINISTRATOR permission, which has
+	// no Stoat bit equivalent and is otherwise dropped entirely at ingest).
+	Privileged bool
 }
 
 // Emoji is a custom emoji, auto-created on first use (spec 6).

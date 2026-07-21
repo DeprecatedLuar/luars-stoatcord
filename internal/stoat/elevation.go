@@ -20,7 +20,8 @@ const minimumMirroredRank = 1
 // elevationRole is the bot's own resolved elevation role, cached on Client
 // by ResolveElevationRole.
 type elevationRole struct {
-	id string
+	id          string
+	permissions uint64
 }
 
 // ResolveElevationRole finds the server's rank-0 role and verifies the bot
@@ -64,7 +65,7 @@ func (c *Client) ResolveElevationRole(ctx context.Context, serverID string) erro
 		return fmt.Errorf("stoat: bot does not wear rank-%d role %s on server %s", elevationRank0, role.ID, serverID)
 	}
 
-	c.elevation = &elevationRole{id: role.ID}
+	c.elevation = &elevationRole{id: role.ID, permissions: role.Permissions.Allow}
 	return nil
 }
 
@@ -75,6 +76,20 @@ func (c *Client) ElevationRoleID() string {
 		return ""
 	}
 	return c.elevation.id
+}
+
+// ElevationPermissions returns the bot's own elevation role's live allow-bits,
+// cached by a prior successful ResolveElevationRole call, or 0 if none has
+// succeeded yet. applyChannelOverwrites (channel.go) uses this instead of a
+// theoretical "grant everything" mask: Stoat's throw_permission_override
+// (crates/core/permissions/src/models/mod.rs) refuses to let an actor grant
+// a bit it doesn't already hold, so only bits the bot actually holds can
+// ever be self-granted without a 403.
+func (c *Client) ElevationPermissions() uint64 {
+	if c.elevation == nil {
+		return 0
+	}
+	return c.elevation.permissions
 }
 
 // isElevationRole reports whether roleID is the bot's own cached elevation

@@ -31,16 +31,23 @@ func serverAndMemberHandlers(mux *http.ServeMux, rolesJSON, selfRoleIDsJSON stri
 func TestResolveElevationRole_BotWearsRankZero_Succeeds(t *testing.T) {
 	client, _ := newTestServer(t, func(mux *http.ServeMux, _ *sync.Mutex, _ *[]recordedRequest) {
 		serverAndMemberHandlers(mux, `{
-			"elevation": {"name": "Stoatcord", "rank": 0},
+			"elevation": {"name": "Stoatcord", "rank": 0, "permissions": {"a": 1099510595551, "d": 0}},
 			"other": {"name": "Member", "rank": 5}
 		}`, `["elevation"]`)
 	})
+
+	if got := client.ElevationPermissions(); got != 0 {
+		t.Fatalf("ElevationPermissions() before resolve = %d, want 0", got)
+	}
 
 	if err := client.ResolveElevationRole(context.Background(), "srv1"); err != nil {
 		t.Fatalf("ResolveElevationRole: %v", err)
 	}
 	if got := client.ElevationRoleID(); got != "elevation" {
 		t.Fatalf("ElevationRoleID() = %q, want elevation", got)
+	}
+	if got := client.ElevationPermissions(); got != 1099510595551 {
+		t.Fatalf("ElevationPermissions() = %d, want 1099510595551", got)
 	}
 }
 
@@ -56,6 +63,9 @@ func TestResolveElevationRole_NoRoleAtRankZero_Fails(t *testing.T) {
 	}
 	if got := client.ElevationRoleID(); got != "" {
 		t.Fatalf("ElevationRoleID() = %q, want empty after a failed resolve", got)
+	}
+	if got := client.ElevationPermissions(); got != 0 {
+		t.Fatalf("ElevationPermissions() = %d, want 0 after a failed resolve", got)
 	}
 }
 

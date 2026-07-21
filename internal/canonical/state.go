@@ -89,6 +89,7 @@ type roleJSON struct {
 	Hoist       bool          `json:"hoist"`
 	Rank        int           `json:"rank"`
 	Permissions overwriteJSON `json:"permissions"`
+	Privileged  bool          `json:"privileged"`
 }
 
 // CanonicalJSON serializes the role with sorted allow/deny permission lists,
@@ -102,6 +103,7 @@ func (r Role) CanonicalJSON() ([]byte, error) {
 		Hoist:       r.Hoist,
 		Rank:        r.Rank,
 		Permissions: r.Permissions.canonicalize(),
+		Privileged:  r.Privileged,
 	})
 }
 
@@ -124,5 +126,6 @@ func ParseRoleCanonicalJSON(data []byte) (Role, error) {
 			Allow: rj.Permissions.Allow,
 			Deny:  rj.Permissions.Deny,
 		},
+		Privileged: rj.Privileged,
 	}, nil
 }

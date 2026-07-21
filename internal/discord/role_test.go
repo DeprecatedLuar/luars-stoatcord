@@ -56,3 +56,27 @@ func TestRoleFromDiscord_DropsUnmappedPermissionAndLogs(t *testing.T) {
 		t.Error("expected a drop log for Administrator permission")
 	}
 }
+
+func TestRoleFromDiscord_AdministratorSetsPrivileged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	r := &discordgo.Role{ID: "role-1", Name: "Admin", Permissions: discordgo.PermissionAdministrator}
+
+	got := RoleFromDiscord(r, logger)
+
+	if !got.Privileged {
+		t.Error("Privileged = false, want true for a role with ADMINISTRATOR")
+	}
+}
+
+func TestRoleFromDiscord_NoAdministratorLeavesPrivilegedFalse(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	r := &discordgo.Role{ID: "role-1", Name: "Member", Permissions: discordgo.PermissionViewChannel}
+
+	got := RoleFromDiscord(r, logger)
+
+	if got.Privileged {
+		t.Error("Privileged = true, want false without ADMINISTRATOR")
+	}
+}

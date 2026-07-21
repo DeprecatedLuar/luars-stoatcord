@@ -22,15 +22,6 @@ type permissionsBody struct {
 // permission overwrite.
 const defaultRoleID = "default"
 
-// GrantAllSafe is Stoat's own "all safe permissions" bitmask (ground truth
-// crates/core/permissions/src/models/channel.rs) -- the exact equivalent
-// of Discord's Admin bypass, scoped to a single self-override rather than
-// a true server-owner grant. applyChannelOverwrites (channel.go) injects
-// it for the bot's own elevation role on every channel
-// (implementation-plan.md Phase 4.7 guarantee 2), so the bot can never
-// lock itself out of a channel it manages.
-const GrantAllSafe uint64 = 0x000F_FFFF_FFFF_FFFF
-
 // putPermissions PUTs a tri-state permissions body to path (gap 2 / gap 4b:
 // the library's own helpers send the wrong shape for both channel and
 // server-role permission endpoints; both are bypassed in favor of a direct

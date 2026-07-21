@@ -132,6 +132,24 @@ func TestParseRoleCanonicalJSON_RoundTripsCanonicalJSON(t *testing.T) {
 	}
 }
 
+func TestParseRoleCanonicalJSON_RoundTripsPrivileged(t *testing.T) {
+	r := Role{ID: "role-1", Privileged: true}
+
+	data, err := r.CanonicalJSON()
+	if err != nil {
+		t.Fatalf("CanonicalJSON() error: %v", err)
+	}
+
+	got, err := ParseRoleCanonicalJSON(data)
+	if err != nil {
+		t.Fatalf("ParseRoleCanonicalJSON() error: %v", err)
+	}
+
+	if !got.Privileged {
+		t.Fatalf("Privileged = false, want true")
+	}
+}
+
 func TestRole_CanonicalJSON_SortsPermissions(t *testing.T) {
 	a := Role{ID: "r1", Permissions: Overwrite{Allow: []Permission{PermSendMessages, PermViewChannel}}}
 	b := Role{ID: "r1", Permissions: Overwrite{Allow: []Permission{PermViewChannel, PermSendMessages}}}

@@ -3,6 +3,7 @@ package stoat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -88,10 +89,12 @@ func TestCreateChannel_TextTypeAndAppliesOverwrites(t *testing.T) {
 	}
 }
 
-// Phase 4.7 guarantee 2: the bot's elevation role self-grant is injected
-// on every channel, unconditionally, first -- before any Discord-derived
-// overwrite.
-func TestCreateChannel_InjectsElevationSelfGrantFirst(t *testing.T) {
+// The bot's own rank-0 elevation role can never successfully self-grant a
+// channel override (Stoat's permissions_set.rs refuses a non-owner writing
+// an override for a role at or above their own rank, and the elevation
+// role's rank IS the bot's own rank) -- so CreateChannel must never target
+// it at all.
+func TestCreateChannel_DoesNotInjectElevationRoleOverride(t *testing.T) {
 	client, requests := newTestServer(t, func(mux *http.ServeMux, mu *sync.Mutex, reqs *[]recordedRequest) {
 		serverAndMemberHandlers(mux, `{"elevation": {"name": "Stoatcord", "rank": 0}}`, `["elevation"]`)
 		mux.HandleFunc("/servers/srv1/channels", func(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +105,47 @@ func TestCreateChannel_InjectsElevationSelfGrantFirst(t *testing.T) {
 			w.Write([]byte(`{"_id":"chan1","name":"general"}`))
 		})
 		mux.HandleFunc("/channels/chan1/permissions/elevation", func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("CreateChannel must not write a permission override for the elevation role")
+		})
+	})
+	if err := client.ResolveElevationRole(context.Background(), "srv1"); err != nil {
+		t.Fatalf("ResolveElevationRole: %v", err)
+	}
+
+	if _, err := client.CreateChannel(context.Background(), "srv1", canonical.StoatChannel{Name: "general", Type: "Text"}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	if len(*requests) != 1 {
+		t.Fatalf("got %d requests, want 1 (create only, no overwrites): %+v", len(*requests), *requests)
+	}
+}
+
+// Admin-mapped roles (Discord roles that carried ADMINISTRATOR) are injected
+// on every channel, unconditionally, first -- before any Discord-derived
+// overwrite -- since the bot (wearing rank 0) can write overrides for any
+// role ranked worse than itself, unlike its own elevation role.
+func TestCreateChannel_InjectsAdminRoleSelfGrantsFirst(t *testing.T) {
+	const elevationPermissions = 1099510595551
+	client, requests := newTestServer(t, func(mux *http.ServeMux, mu *sync.Mutex, reqs *[]recordedRequest) {
+		serverAndMemberHandlers(mux, `{
+			"elevation": {"name": "Stoatcord", "rank": 0, "permissions": {"a": `+fmt.Sprint(elevationPermissions)+`, "d": 0}}
+		}`, `["elevation"]`)
+		mux.HandleFunc("/servers/srv1/channels", func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*reqs = append(*reqs, recordedRequest{r.Method, r.URL.Path, nil})
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"_id":"chan1","name":"general"}`))
+		})
+		mux.HandleFunc("/channels/chan1/permissions/admin1", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := jsonBody(r)
+			mu.Lock()
+			*reqs = append(*reqs, recordedRequest{r.Method, r.URL.Path, body})
+			mu.Unlock()
+			w.Write([]byte(`{}`))
+		})
+		mux.HandleFunc("/channels/chan1/permissions/admin2", func(w http.ResponseWriter, r *http.Request) {
 			body, _ := jsonBody(r)
 			mu.Lock()
 			*reqs = append(*reqs, recordedRequest{r.Method, r.URL.Path, body})
@@ -115,6 +159,7 @@ func TestCreateChannel_InjectsElevationSelfGrantFirst(t *testing.T) {
 			w.Write([]byte(`{}`))
 		})
 	})
+	client.SetAdminRoleIDs([]string{"admin1", "admin2"})
 	if err := client.ResolveElevationRole(context.Background(), "srv1"); err != nil {
 		t.Fatalf("ResolveElevationRole: %v", err)
 	}
@@ -130,11 +175,11 @@ func TestCreateChannel_InjectsElevationSelfGrantFirst(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	if len(*requests) != 3 {
-		t.Fatalf("got %d requests, want 3 (create + self-grant + role1 overwrite): %+v", len(*requests), *requests)
+	if len(*requests) != 4 {
+		t.Fatalf("got %d requests, want 4 (create + 2 admin self-grants + role1 overwrite): %+v", len(*requests), *requests)
 	}
-	if (*requests)[1].path != "/channels/chan1/permissions/elevation" {
-		t.Fatalf("second request = %+v, want the elevation self-grant applied before any Discord-derived overwrite", (*requests)[1])
+	if (*requests)[1].path != "/channels/chan1/permissions/admin1" || (*requests)[2].path != "/channels/chan1/permissions/admin2" {
+		t.Fatalf("admin self-grants = %+v, %+v, want admin1 then admin2 before any Discord-derived overwrite", (*requests)[1], (*requests)[2])
 	}
 	var grantBody struct {
 		Permissions struct {
@@ -145,11 +190,29 @@ func TestCreateChannel_InjectsElevationSelfGrantFirst(t *testing.T) {
 	if err := json.Unmarshal((*requests)[1].body, &grantBody); err != nil {
 		t.Fatalf("unmarshal self-grant body: %v", err)
 	}
-	if grantBody.Permissions.Allow != GrantAllSafe || grantBody.Permissions.Deny != 0 {
-		t.Fatalf("self-grant = %+v, want allow=%d deny=0", grantBody.Permissions, GrantAllSafe)
+	if grantBody.Permissions.Allow != elevationPermissions || grantBody.Permissions.Deny != 0 {
+		t.Fatalf("self-grant = %+v, want allow=%d deny=0", grantBody.Permissions, elevationPermissions)
 	}
-	if (*requests)[2].path != "/channels/chan1/permissions/role1" {
-		t.Fatalf("third request = %+v, want role1's overwrite", (*requests)[2])
+	if (*requests)[3].path != "/channels/chan1/permissions/role1" {
+		t.Fatalf("fourth request = %+v, want role1's overwrite", (*requests)[3])
+	}
+}
+
+func TestCreateChannel_AdminRolesWithoutResolvedElevation_Fails(t *testing.T) {
+	client, _ := newTestServer(t, func(mux *http.ServeMux, mu *sync.Mutex, reqs *[]recordedRequest) {
+		mux.HandleFunc("/servers/srv1/channels", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"_id":"chan1","name":"general"}`))
+		})
+		mux.HandleFunc("/channels/chan1/permissions/admin1", func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("must not attempt a self-grant before the elevation role is resolved")
+		})
+	})
+	client.SetAdminRoleIDs([]string{"admin1"})
+
+	_, err := client.CreateChannel(context.Background(), "srv1", canonical.StoatChannel{Name: "general", Type: "Text"})
+	if err == nil {
+		t.Fatal("CreateChannel: want error, elevation role was never resolved")
 	}
 }
 

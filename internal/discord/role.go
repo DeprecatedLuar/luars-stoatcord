@@ -22,5 +22,6 @@ func RoleFromDiscord(r *discordgo.Role, logger *slog.Logger) canonical.Role {
 		Permissions: canonical.Overwrite{
 			Allow: PermissionsFromBits(r.Permissions, logger),
 		},
+		Privileged: r.Permissions&discordgo.PermissionAdministrator != 0,
 	}
 }

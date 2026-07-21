@@ -25,6 +25,24 @@ type Client struct {
 	// startup by ResolveElevationRole. Set before any concurrent op
 	// traffic begins, so a plain field (no mutex) is safe.
 	elevation *elevationRole
+	// adminRoles caches the Stoat role ids mirrored from Discord roles that
+	// carried ADMINISTRATOR, resolved once at startup by cmd/stoatcord (spans
+	// Discord + store, so it can't be resolved inside this package the way
+	// ResolveElevationRole is). Set before any concurrent op traffic begins,
+	// so a plain field (no mutex) is safe.
+	adminRoles []string
+}
+
+// SetAdminRoleIDs caches the Stoat role ids to self-grant on every channel
+// (see applyChannelOverwrites). Must be called once at startup before any
+// channel create/edit runs.
+func (c *Client) SetAdminRoleIDs(ids []string) {
+	c.adminRoles = ids
+}
+
+// AdminRoleIDs returns the Stoat role ids cached by SetAdminRoleIDs.
+func (c *Client) AdminRoleIDs() []string {
+	return c.adminRoles
 }
 
 // New constructs a Client against apiBase and immediately overrides

@@ -189,6 +189,20 @@ func main() {
 
 	logger.Info("running startup structure reconcile")
 	categories, channels, roles := discord.StructureFromState(discordSession, cfg.DiscordGuild, logger)
+
+	// Admin-role resolution: the bot's own elevation role can never
+	// self-grant a channel permission override (see resolveAdminRoles doc),
+	// so channel visibility instead rides on Discord roles that carried
+	// ADMINISTRATOR. Must run before reconcile/converge touch any channel,
+	// since applyChannelOverwrites injects these ids on every channel
+	// create/edit.
+	adminRoleIDs, err := resolveAdminRoles(ctx, st, stoatClient, cfg.StoatServerID, roles, logger)
+	if err != nil {
+		logger.Error("stoat: could not resolve an admin role for channel visibility injection, refusing to start", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("resolved admin roles for channel visibility injection", "stoat_role_ids", adminRoleIDs)
+
 	reconcileParams := reconcile.Params{
 		ServerID:   cfg.StoatServerID,
 		GuildID:    cfg.DiscordGuild,
