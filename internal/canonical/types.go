@@ -73,4 +73,10 @@ type Message struct {
 	AuthorColour    string
 	Content         string
 	AttachmentRefs  []string
+	// ReplyToID is the Discord id of the message this one replies to, empty
+	// if it isn't a reply. Left unresolved here deliberately -- translating
+	// it to a Stoat message id needs a mapping lookup, which is a
+	// discord-package/apply-time concern, not something internal/canonical
+	// can do (it knows nothing of either platform's live state).
+	ReplyToID string
 }

@@ -101,10 +101,17 @@ type StoatMessage struct {
 	Content     string
 	Masquerade  StoatMasquerade
 	Attachments []string
+	// ReplyToStoatID is the Stoat id of the message being replied to, empty
+	// if none. Resolved by the caller (internal/discord, via a mapping
+	// lookup) -- ToStoat cannot fill this in itself since it has no access
+	// to mapping state.
+	ReplyToStoatID string
 }
 
 // ToStoat translates a canonical message to Stoat's wire shape, building the
-// masquerade override from the stored author display fields.
+// masquerade override from the stored author display fields. ReplyToStoatID
+// is left empty -- it is set by the caller after resolving m.ReplyToID
+// through a mapping lookup.
 func (m Message) ToStoat() StoatMessage {
 	return StoatMessage{
 		Content: m.Content,
@@ -126,6 +133,7 @@ type messageJSON struct {
 	AuthorColour    string   `json:"author_colour"`
 	Content         string   `json:"content"`
 	AttachmentRefs  []string `json:"attachment_refs"`
+	ReplyToID       string   `json:"reply_to_id,omitempty"`
 }
 
 // CanonicalJSON serializes the message for storage in message_map's
@@ -139,6 +147,7 @@ func (m Message) CanonicalJSON() ([]byte, error) {
 		AuthorColour:    m.AuthorColour,
 		Content:         m.Content,
 		AttachmentRefs:  m.AttachmentRefs,
+		ReplyToID:       m.ReplyToID,
 	})
 }
 
@@ -156,6 +165,7 @@ func ParseMessageCanonicalJSON(data []byte) (Message, error) {
 		AuthorColour:    mj.AuthorColour,
 		Content:         mj.Content,
 		AttachmentRefs:  mj.AttachmentRefs,
+		ReplyToID:       mj.ReplyToID,
 	}, nil
 }
 

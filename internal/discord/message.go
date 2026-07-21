@@ -40,6 +40,14 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 
 	authorName, authorAvatar, authorColour := authorDisplayFromDiscord(s, guildID, m, logger)
 
+	var replyToID string
+	// MessageReferenceTypeForward (forwarded messages) is a distinct Discord
+	// feature from a reply and carries no equivalent Stoat concept yet --
+	// only a Default-type reference is a genuine reply.
+	if m.MessageReference != nil && m.MessageReference.Type == discordgo.MessageReferenceTypeDefault {
+		replyToID = m.MessageReference.MessageID
+	}
+
 	canonicalMsg := canonical.Message{
 		ID:              m.ID,
 		ChannelID:       m.ChannelID,
@@ -47,6 +55,7 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 		AuthorName:      authorName,
 		AuthorAvatarRef: authorAvatar,
 		AuthorColour:    authorColour,
+		ReplyToID:       replyToID,
 	}
 
 	canonicalState, err := canonicalMsg.CanonicalJSON()
@@ -96,7 +105,29 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 				func(stoatID string) error {
 					return writer.EditMessage(ctx, stoatChannelID, stoatID, canonicalMsg.Content)
 				},
-				func() (string, error) { return writer.SendMessage(ctx, stoatChannelID, canonicalMsg.ToStoat()) },
+				func() (string, error) {
+					stoatMsg := canonicalMsg.ToStoat()
+					// Resolve the reply target's Stoat id here, not in
+					// ToStoat -- canonical has no mapping access.
+					if canonicalMsg.ReplyToID != "" {
+						replyMapping, err := mappings.Get(string(engine.EntityMessage), canonicalMsg.ReplyToID)
+						if err != nil {
+							return "", err
+						}
+						if replyMapping.Found && replyMapping.StoatID != "" {
+							stoatMsg.ReplyToStoatID = replyMapping.StoatID
+						} else {
+							// Parent was never mirrored (empty content, sent
+							// before the bridge existed, or already pruned by
+							// the 30-day retention window) -- no Stoat
+							// message exists to link against. Fall back to
+							// quoting its content inline rather than losing
+							// the reply context entirely.
+							stoatMsg.Content = quoteUnmappedReply(s, m.ChannelID, canonicalMsg.ReplyToID, stoatMsg.Content, logger)
+						}
+					}
+					return writer.SendMessage(ctx, stoatChannelID, stoatMsg)
+				},
 			)
 		},
 	}
@@ -123,6 +154,31 @@ func BuildMessageDeleteOp(discordMsgID, discordChannelID string, mappings Mappin
 			)
 		},
 	}
+}
+
+// maxQuotedReplyLen caps how much of an unmapped reply target's content gets
+// quoted inline, so a long parent message can't dwarf the reply itself.
+const maxQuotedReplyLen = 150
+
+// quoteUnmappedReply is the fallback for replying to a Discord message that
+// has no Stoat mapping (see BuildMessageOp) -- there's no Stoat message id to
+// attach a real reply to, so it fetches the parent from Discord and prepends
+// a quoted snippet to the reply's own content instead. Any failure to fetch
+// (parent deleted, API error) or an empty parent just logs and sends the
+// reply as a plain message, same as before this fallback existed.
+func quoteUnmappedReply(s *discordgo.Session, channelID, replyToID, content string, logger *slog.Logger) string {
+	parent, err := s.ChannelMessage(channelID, replyToID)
+	if err != nil || parent.Content == "" {
+		logger.Info("discord: could not fetch unmapped reply target, sending as plain message", "reply_to_id", replyToID, "error", err)
+		return content
+	}
+
+	snippet := []rune(parent.Content)
+	if len(snippet) > maxQuotedReplyLen {
+		snippet = append(snippet[:maxQuotedReplyLen], '…')
+	}
+
+	return fmt.Sprintf("> **%s**: %s\n\n%s", parent.Author.Username, string(snippet), content)
 }
 
 // authorDisplayFromDiscord resolves a message's masquerade display fields:

@@ -8,11 +8,21 @@ import (
 	"within.website/x/web/revolt"
 )
 
-// SendMessage posts a message via masquerade, returning its Stoat id.
+// SendMessage posts a message via masquerade, returning its Stoat id. If
+// msg.ReplyToStoatID is set, the message is sent as a reply -- mention is
+// deliberately always false: every mirrored message posts under the same
+// bot account (spec 7's masquerade-only model), so a real mention would just
+// ping the bot itself, not the Discord author whose reply this represents.
 func (c *Client) SendMessage(ctx context.Context, channelID string, msg canonical.StoatMessage) (string, error) {
+	var replies []revolt.Replies
+	if msg.ReplyToStoatID != "" {
+		replies = []revolt.Replies{{Id: msg.ReplyToStoatID, Mention: false}}
+	}
+
 	sent, err := c.inner.ChannelSendMessage(ctx, channelID, &revolt.SendMessage{
 		Content:     msg.Content,
 		Attachments: msg.Attachments,
+		Replies:     replies,
 		Masquerade: &revolt.Masquerade{
 			Name:      msg.Masquerade.Name,
 			AvatarURL: msg.Masquerade.Avatar,
