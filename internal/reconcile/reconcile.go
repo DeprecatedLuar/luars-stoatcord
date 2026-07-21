@@ -101,13 +101,24 @@ func Bind(ctx context.Context, p Params) error {
 		discordCategories[i] = identity{id: c.ID, name: c.Name}
 	}
 	stoatCategories := make([]identity, len(server.Categories))
+	categoryIDs := make(map[string]bool, len(server.Categories))
 	for i, c := range server.Categories {
 		stoatCategories[i] = identity{id: c.ID, name: c.Title}
+		categoryIDs[c.ID] = true
 	}
-	if err := bindEntities(ctx, p, engine.EntityCategory, discordCategories, stoatCategories, ""); err != nil {
+	if err := bindEntities(ctx, p, engine.EntityCategory, discordCategories, stoatCategories, categoryIDs, ""); err != nil {
 		return err
 	}
 
+	// channelIDs is existence truth for the dead-mapping check below: it
+	// comes straight off server.ChannelIDs, which lists every channel the
+	// bot's server membership can see regardless of per-channel view
+	// permission. stoatChannels, by contrast, only holds channels the bot
+	// could fully fetch -- see the loop below.
+	channelIDs := make(map[string]bool, len(server.ChannelIDs))
+	for _, id := range server.ChannelIDs {
+		channelIDs[id] = true
+	}
 	stoatChannels := make([]identity, 0, len(server.ChannelIDs))
 	for _, id := range server.ChannelIDs {
 		info, err := p.Reader.FetchChannel(ctx, id)
@@ -115,8 +126,10 @@ func Bind(ctx context.Context, p Params) error {
 			// A channel the bot cannot view (e.g. a role-restricted
 			// channel with no ViewChannel grant) 403s on fetch. That
 			// channel simply can't be identity-matched -- exclude it from
-			// this pass (never bound, never flagged foreign) rather than
-			// aborting the whole reconcile over one inaccessible channel.
+			// this pass (never bound, never flagged foreign). It stays in
+			// channelIDs, so the dead-mapping check still treats it as
+			// alive rather than mistaking "can't view" for "doesn't
+			// exist" and recreating a duplicate.
 			p.Logger.Warn("reconcile: skipping channel, fetch failed", "stoat_channel_id", id, "error", err)
 			continue
 		}
@@ -126,7 +139,7 @@ func Bind(ctx context.Context, p Params) error {
 	for i, c := range p.Channels {
 		discordChannels[i] = identity{id: c.ID, name: c.Name, kind: string(c.Type)}
 	}
-	if err := bindEntities(ctx, p, engine.EntityChannel, discordChannels, stoatChannels, ""); err != nil {
+	if err := bindEntities(ctx, p, engine.EntityChannel, discordChannels, stoatChannels, channelIDs, ""); err != nil {
 		return err
 	}
 
@@ -135,8 +148,10 @@ func Bind(ctx context.Context, p Params) error {
 		discordRoles[i] = identity{id: r.ID, name: r.Name}
 	}
 	stoatRoles := make([]identity, len(server.Roles))
+	roleIDs := make(map[string]bool, len(server.Roles))
 	for i, r := range server.Roles {
 		stoatRoles[i] = identity{id: r.ID, name: r.Name}
+		roleIDs[r.ID] = true
 	}
 
 	protectedRoleID, err := botElevationRoleID(ctx, p, server.Roles)
@@ -148,7 +163,7 @@ func Bind(ctx context.Context, p Params) error {
 		p.Logger.Error("reconcile: could not determine bot's elevation role, it will not be exempted from foreign-entity reap", "error", err)
 	}
 
-	return bindEntities(ctx, p, engine.EntityRole, discordRoles, stoatRoles, protectedRoleID)
+	return bindEntities(ctx, p, engine.EntityRole, discordRoles, stoatRoles, roleIDs, protectedRoleID)
 }
 
 // botElevationRoleID returns the stoat id of the bot's own highest-ranked
@@ -187,24 +202,30 @@ func botElevationRoleID(ctx context.Context, p Params, liveRoles []stoat.RoleInf
 // by some other active mapping, by exact name(+kind) equality. Unclaimed
 // Stoat entities left over at the end are foreign (logged, dry-run).
 //
-// An already-active mapping whose Stoat id is no longer present in
-// stoatItems is a dead mapping (the mapped entity vanished from Stoat
-// without our knowledge) -- treated the same as no mapping at all, so the
-// same pass's name-matching below can re-adopt a live entity of the same
-// name instead of leaving it permanently unclaimed/"foreign" and the dead
-// mapping permanently stale. ReconcileLive deliberately does not correct
-// this case (a live-fetch miss there is logged and left untouched) --
-// detecting and clearing a dead mapping is identity work, squarely Bind's
-// job, not attribute-drift verification's.
+// An already-active mapping whose Stoat id is absent from existIDs is a
+// dead mapping (the mapped entity vanished from Stoat without our
+// knowledge) -- treated the same as no mapping at all, so the same pass's
+// name-matching below can re-adopt a live entity of the same name instead
+// of leaving it permanently unclaimed/"foreign" and the dead mapping
+// permanently stale. ReconcileLive deliberately does not correct this case
+// (a live-fetch miss there is logged and left untouched) -- detecting and
+// clearing a dead mapping is identity work, squarely Bind's job, not
+// attribute-drift verification's.
+//
+// existIDs is deliberately a separate id set from stoatItems: stoatItems
+// only holds entities the bot could fully fetch (name+kind), and for
+// channels that fetch is permission-scoped -- a role-restricted channel
+// with no ViewChannel grant for the bot 403s and is dropped from
+// stoatItems by the caller, even though the channel is very much alive.
+// Falsely reading that drop as "gone" here would clear a healthy mapping
+// and recreate a duplicate channel on the next bind. existIDs must instead
+// come from a listing that doesn't require per-entity view permission
+// (server.ChannelIDs for channels; the caller's own fetched id set for
+// categories/roles, which never hits this permission gap).
 // protected, when non-empty, is a stoat id that must never be flagged as a
 // foreign entity regardless of claim state (the bot's own elevation role;
 // see botElevationRoleID). Empty for every entity type but role.
-func bindEntities(ctx context.Context, p Params, entityType engine.EntityType, discordItems, stoatItems []identity, protected string) error {
-	liveStoatIDs := make(map[string]bool, len(stoatItems))
-	for _, s := range stoatItems {
-		liveStoatIDs[s.id] = true
-	}
-
+func bindEntities(ctx context.Context, p Params, entityType engine.EntityType, discordItems, stoatItems []identity, existIDs map[string]bool, protected string) error {
 	claimed := make(map[string]bool, len(stoatItems))
 	var unmapped []identity
 
@@ -214,7 +235,7 @@ func bindEntities(ctx context.Context, p Params, entityType engine.EntityType, d
 			return fmt.Errorf("reconcile: get mapping %s %s: %w", entityType, d.id, err)
 		}
 		if m.Found && m.Status == engine.StatusActive {
-			if liveStoatIDs[m.StoatID] {
+			if existIDs[m.StoatID] {
 				claimed[m.StoatID] = true
 				continue
 			}

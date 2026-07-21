@@ -465,6 +465,48 @@ func TestBind_DeadMapping_ClearedAndReboundToLiveEntityOfSameName(t *testing.T) 
 	}
 }
 
+// Reproduces the live-session bug this fix addresses: a channel restricted
+// to specific Discord roles (e.g. a role-gated private channel) has no
+// ViewChannel grant for the bot, so FetchChannel 403s on every reconcile
+// pass even though the channel is alive -- it's still listed in
+// server.ChannelIDs. Before the fix, bindEntities only knew about channels
+// it could fetch, so the 403'd channel looked identical to a truly-deleted
+// one: its active mapping got cleared as "dead", and the next bind pass
+// created a brand-new duplicate Stoat channel (repeating every cycle,
+// flooding the category with orphaned duplicates and dropping the channel
+// out of its category since a freshly-created mapping starts pending).
+func TestBind_ActiveMappingToPermissionDeniedChannel_NotClearedAsDead(t *testing.T) {
+	mappings := newFakeMappings()
+	mappings.WritePending("channel", "dc-chan-1", "{}")
+	mappings.Confirm("channel", "dc-chan-1", "stoat-chan-forbidden")
+
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			ChannelIDs: []string{"stoat-chan-forbidden"}, // still listed -- not deleted
+		},
+		channelErrs: map[string]error{
+			"stoat-chan-forbidden": errors.New("403: MissingPermission ViewChannel"),
+		},
+	}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Channels: []canonical.Channel{{ID: "dc-chan-1", Name: "secret-room", Type: canonical.ChannelTypeText}},
+		Mappings: mappings,
+		Reader:   reader,
+		DryRun:   true,
+		Logger:   testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	m, _ := mappings.Get("channel", "dc-chan-1")
+	if !m.Found || m.Status != engine.StatusActive || m.StoatID != "stoat-chan-forbidden" {
+		t.Fatalf("channel mapping = %+v, want left untouched (channel is alive, just unviewable), not cleared/recreated", m)
+	}
+}
+
 func TestBind_NoStoatMatch_LeavesUnboundForConvergeToCreate(t *testing.T) {
 	mappings := newFakeMappings()
 	reader := &fakeReader{}
