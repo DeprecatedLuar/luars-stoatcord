@@ -30,18 +30,23 @@ import (
 // already match Discord's.
 const emptyCanonicalState = "{}"
 
-// foreignDryRun gates destructive action on a foreign Stoat entity (spec:
-// "Destructive actions are dry-run during testing"). Bind never deletes
-// regardless -- real deletion is a later phase's scope -- this constant only
-// documents the gate so a future phase flips one place, not scattered ones.
-const foreignDryRun = true
-
 // StoatReader is the subset of *internal/stoat.Client's read methods this
 // package needs.
 type StoatReader interface {
 	FetchServer(ctx context.Context, serverID string) (stoat.ServerInfo, error)
 	FetchChannel(ctx context.Context, channelID string) (stoat.ChannelInfo, error)
 	FetchSelfRoleIDs(ctx context.Context, serverID string) ([]string, error)
+}
+
+// StoatWriter is the subset of *internal/stoat.Client's delete methods
+// bindEntities needs to reap a foreign entity. Categories have no delete
+// path here: a Stoat category is a slot in the server's category list
+// (stoat.Client.SetCategories rewrites the whole list), not a
+// deletable-by-id entity, so foreign categories always stay dry-run
+// ("would delete") regardless of Params.DryRun until that's built.
+type StoatWriter interface {
+	DeleteChannel(ctx context.Context, channelID string) error
+	DeleteRole(ctx context.Context, serverID, roleID string) error
 }
 
 // Params bundles Bind's dependencies. Categories/Channels/Roles are
@@ -60,7 +65,13 @@ type Params struct {
 	Roles      []canonical.Role
 	Mappings   engine.MappingStore
 	Reader     StoatReader
-	Logger     *slog.Logger
+	Writer     StoatWriter
+	// DryRun mirrors the engine's global dry-run gate (config.DryRun): when
+	// true, a foreign entity is only logged ("would delete"); when false,
+	// bindEntities actually deletes it (channels/roles only -- see
+	// StoatWriter).
+	DryRun bool
+	Logger *slog.Logger
 }
 
 // identity is the name(+kind)-matching slice of an entity, common to both
@@ -74,10 +85,11 @@ type identity struct {
 // Bind adopts pre-existing Discord<->Stoat entities by an unambiguous
 // unique name(+type) match, writing an active mapping row for each (spec:
 // "Bind only on an unambiguous unique match ... Ambiguous -> log WARN and
-// skip, never guess"). Unmatched Stoat entities are logged as foreign
-// ("would delete", dry-run only). A second run against an already-bound
-// state is a no-op: every Discord entity already has an active mapping, so
-// nothing is unmapped left to bind.
+// skip, never guess"). Unmatched Stoat entities are foreign: deleted when
+// p.DryRun is false (channels/roles only -- categories always log "would
+// delete", see StoatWriter), logged "would delete" otherwise. A second run
+// against an already-bound state is a no-op: every Discord entity already
+// has an active mapping, so nothing is unmapped left to bind.
 func Bind(ctx context.Context, p Params) error {
 	server, err := p.Reader.FetchServer(ctx, p.ServerID)
 	if err != nil {
@@ -92,7 +104,7 @@ func Bind(ctx context.Context, p Params) error {
 	for i, c := range server.Categories {
 		stoatCategories[i] = identity{id: c.ID, name: c.Title}
 	}
-	if err := bindEntities(p, engine.EntityCategory, discordCategories, stoatCategories, ""); err != nil {
+	if err := bindEntities(ctx, p, engine.EntityCategory, discordCategories, stoatCategories, ""); err != nil {
 		return err
 	}
 
@@ -114,7 +126,7 @@ func Bind(ctx context.Context, p Params) error {
 	for i, c := range p.Channels {
 		discordChannels[i] = identity{id: c.ID, name: c.Name, kind: string(c.Type)}
 	}
-	if err := bindEntities(p, engine.EntityChannel, discordChannels, stoatChannels, ""); err != nil {
+	if err := bindEntities(ctx, p, engine.EntityChannel, discordChannels, stoatChannels, ""); err != nil {
 		return err
 	}
 
@@ -129,15 +141,14 @@ func Bind(ctx context.Context, p Params) error {
 
 	protectedRoleID, err := botElevationRoleID(ctx, p, server.Roles)
 	if err != nil {
-		// Not fatal to the whole reconcile -- foreignDryRun means nothing
-		// destructive happens yet regardless -- but must be loud, since a
-		// silent miss here is exactly what would let the bot's own
-		// elevation role slip through the foreign-entity check once
-		// deletion is a real action.
+		// Not fatal to the whole reconcile, but must be loud: with
+		// p.DryRun false, a silent miss here is exactly what would let
+		// the bot's own elevation role slip through the foreign-entity
+		// check and get deleted.
 		p.Logger.Error("reconcile: could not determine bot's elevation role, it will not be exempted from foreign-entity reap", "error", err)
 	}
 
-	return bindEntities(p, engine.EntityRole, discordRoles, stoatRoles, protectedRoleID)
+	return bindEntities(ctx, p, engine.EntityRole, discordRoles, stoatRoles, protectedRoleID)
 }
 
 // botElevationRoleID returns the stoat id of the bot's own highest-ranked
@@ -188,7 +199,7 @@ func botElevationRoleID(ctx context.Context, p Params, liveRoles []stoat.RoleInf
 // protected, when non-empty, is a stoat id that must never be flagged as a
 // foreign entity regardless of claim state (the bot's own elevation role;
 // see botElevationRoleID). Empty for every entity type but role.
-func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatItems []identity, protected string) error {
+func bindEntities(ctx context.Context, p Params, entityType engine.EntityType, discordItems, stoatItems []identity, protected string) error {
 	liveStoatIDs := make(map[string]bool, len(stoatItems))
 	for _, s := range stoatItems {
 		liveStoatIDs[s.id] = true
@@ -260,9 +271,24 @@ func bindEntities(p Params, entityType engine.EntityType, discordItems, stoatIte
 			p.Logger.Info("reconcile: bot's own elevation role, exempt from foreign-entity reap", "entity_type", entityType, "stoat_id", s.id, "name", s.name)
 			continue
 		}
-		if foreignDryRun {
+		// Categories have no delete-by-id path (StoatWriter doc comment) --
+		// always dry-run regardless of p.DryRun.
+		if p.DryRun || entityType == engine.EntityCategory {
 			p.Logger.Warn("reconcile: foreign entity, would delete (dry run)", "entity_type", entityType, "stoat_id", s.id, "name", s.name)
+			continue
 		}
+		var err error
+		switch entityType {
+		case engine.EntityChannel:
+			err = p.Writer.DeleteChannel(ctx, s.id)
+		case engine.EntityRole:
+			err = p.Writer.DeleteRole(ctx, p.ServerID, s.id)
+		}
+		if err != nil {
+			p.Logger.Error("reconcile: foreign entity, delete failed", "entity_type", entityType, "stoat_id", s.id, "name", s.name, "error", err)
+			continue
+		}
+		p.Logger.Warn("reconcile: foreign entity, deleted", "entity_type", entityType, "stoat_id", s.id, "name", s.name)
 	}
 	return nil
 }

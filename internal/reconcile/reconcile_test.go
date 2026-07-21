@@ -72,6 +72,28 @@ func (f *fakeReader) FetchSelfRoleIDs(ctx context.Context, serverID string) ([]s
 	return f.selfRoleIDs, f.selfRoleErr
 }
 
+type fakeWriter struct {
+	deletedChannels []string
+	deletedRoles    []string
+	deleteErr       error
+}
+
+func (f *fakeWriter) DeleteChannel(ctx context.Context, channelID string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedChannels = append(f.deletedChannels, channelID)
+	return nil
+}
+
+func (f *fakeWriter) DeleteRole(ctx context.Context, serverID, roleID string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedRoles = append(f.deletedRoles, roleID)
+	return nil
+}
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 }
@@ -96,6 +118,7 @@ func TestBind_UniqueNameMatch_WritesActiveMapping(t *testing.T) {
 		Roles:      []canonical.Role{{ID: "dc-role-1", Name: "Admin"}},
 		Mappings:   mappings,
 		Reader:     reader,
+		DryRun:     true,
 		Logger:     testLogger(),
 	})
 	if err != nil {
@@ -130,6 +153,7 @@ func TestBind_AlreadyMappedIsANoOp_Idempotent(t *testing.T) {
 		Categories: []canonical.Category{{ID: "dc-cat-1", Name: "General"}},
 		Mappings:   mappings,
 		Reader:     reader,
+		DryRun:     true,
 		Logger:     testLogger(),
 	}
 	if err := Bind(context.Background(), params); err != nil {
@@ -164,6 +188,7 @@ func TestBind_AmbiguousNameMatch_SkipsBothCandidates(t *testing.T) {
 		Categories: []canonical.Category{{ID: "dc-cat-1", Name: "General"}},
 		Mappings:   mappings,
 		Reader:     reader,
+		DryRun:     true,
 		Logger:     testLogger(),
 	})
 	if err != nil {
@@ -190,6 +215,7 @@ func TestBind_ChannelTypeMismatch_DoesNotMatch(t *testing.T) {
 		Channels: []canonical.Channel{{ID: "dc-chan-1", Name: "general", Type: canonical.ChannelTypeText}},
 		Mappings: mappings,
 		Reader:   reader,
+		DryRun:   true,
 		Logger:   testLogger(),
 	})
 	if err != nil {
@@ -202,7 +228,7 @@ func TestBind_ChannelTypeMismatch_DoesNotMatch(t *testing.T) {
 	}
 }
 
-func TestBind_ForeignStoatEntity_NeverDeleted(t *testing.T) {
+func TestBind_ForeignStoatEntity_DryRun_NeverDeleted(t *testing.T) {
 	mappings := newFakeMappings()
 	reader := &fakeReader{
 		server: stoat.ServerInfo{
@@ -214,6 +240,7 @@ func TestBind_ForeignStoatEntity_NeverDeleted(t *testing.T) {
 		ServerID: "srv1",
 		Mappings: mappings,
 		Reader:   reader,
+		DryRun:   true,
 		Logger:   testLogger(),
 	})
 	if err != nil {
@@ -224,6 +251,91 @@ func TestBind_ForeignStoatEntity_NeverDeleted(t *testing.T) {
 	// logged, never deleted or bound to anything.
 	if len(mappings.rows) != 0 {
 		t.Fatalf("mappings = %+v, want empty (foreign entity must not be touched)", mappings.rows)
+	}
+}
+
+// Foreign categories have no delete-by-id path (StoatWriter's doc comment)
+// -- Params.DryRun=false must not change that, or bindEntities panics
+// dereferencing a nil Writer for a category.
+func TestBind_ForeignCategory_AlwaysDryRun_EvenWithDryRunFalse(t *testing.T) {
+	mappings := newFakeMappings()
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			Categories: []stoat.CategoryInfo{{ID: "stoat-cat-native", Title: "NativeOnly"}},
+		},
+	}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Mappings: mappings,
+		Reader:   reader,
+		DryRun:   false,
+		Logger:   testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	if len(mappings.rows) != 0 {
+		t.Fatalf("mappings = %+v, want empty (foreign category must not be touched)", mappings.rows)
+	}
+}
+
+// With Params.DryRun=false, a foreign channel/role (no Discord match, no
+// mapping) must actually be deleted via StoatWriter, not just logged.
+func TestBind_ForeignChannelAndRole_DryRunFalse_DeletesThroughWriter(t *testing.T) {
+	mappings := newFakeMappings()
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			ChannelIDs: []string{"stoat-chan-native"},
+			Roles:      []stoat.RoleInfo{{ID: "stoat-role-native", Name: "NativeRole"}},
+		},
+		channels: map[string]stoat.ChannelInfo{
+			"stoat-chan-native": {ID: "stoat-chan-native", Name: "native-channel", Type: canonical.ChannelTypeText},
+		},
+	}
+	writer := &fakeWriter{}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Mappings: mappings,
+		Reader:   reader,
+		Writer:   writer,
+		DryRun:   false,
+		Logger:   testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	if len(writer.deletedChannels) != 1 || writer.deletedChannels[0] != "stoat-chan-native" {
+		t.Fatalf("deletedChannels = %v, want [stoat-chan-native]", writer.deletedChannels)
+	}
+	if len(writer.deletedRoles) != 1 || writer.deletedRoles[0] != "stoat-role-native" {
+		t.Fatalf("deletedRoles = %v, want [stoat-role-native]", writer.deletedRoles)
+	}
+}
+
+// A delete failure for one foreign entity must not abort the rest of Bind.
+func TestBind_ForeignEntity_DeleteFails_LoggedNotFatal(t *testing.T) {
+	mappings := newFakeMappings()
+	reader := &fakeReader{
+		server: stoat.ServerInfo{
+			Roles: []stoat.RoleInfo{{ID: "stoat-role-native", Name: "NativeRole"}},
+		},
+	}
+	writer := &fakeWriter{deleteErr: errors.New("stoat: 500")}
+
+	err := Bind(context.Background(), Params{
+		ServerID: "srv1",
+		Mappings: mappings,
+		Reader:   reader,
+		Writer:   writer,
+		DryRun:   false,
+		Logger:   testLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Bind: %v, want no error even when the delete call itself fails", err)
 	}
 }
 
@@ -249,6 +361,7 @@ func TestBind_BotElevationRole_ExemptFromForeignReap(t *testing.T) {
 		ServerID: "srv1",
 		Mappings: mappings,
 		Reader:   reader,
+		DryRun:   true,
 		Logger:   slog.New(slog.NewTextHandler(&logBuf, nil)),
 	})
 	if err != nil {
@@ -293,6 +406,7 @@ func TestBind_ChannelFetchError_SkipsChannelWithoutAbortingBind(t *testing.T) {
 		Channels:   []canonical.Channel{{ID: "dc-chan-1", Name: "general", Type: canonical.ChannelTypeText}},
 		Mappings:   mappings,
 		Reader:     reader,
+		DryRun:     true,
 		Logger:     testLogger(),
 	})
 	if err != nil {
@@ -338,6 +452,7 @@ func TestBind_DeadMapping_ClearedAndReboundToLiveEntityOfSameName(t *testing.T) 
 		Channels: []canonical.Channel{{ID: "dc-chan-1", Name: "general", Type: canonical.ChannelTypeText}},
 		Mappings: mappings,
 		Reader:   reader,
+		DryRun:   true,
 		Logger:   testLogger(),
 	})
 	if err != nil {
@@ -359,6 +474,7 @@ func TestBind_NoStoatMatch_LeavesUnboundForConvergeToCreate(t *testing.T) {
 		Categories: []canonical.Category{{ID: "dc-cat-1", Name: "BrandNew"}},
 		Mappings:   mappings,
 		Reader:     reader,
+		DryRun:     true,
 		Logger:     testLogger(),
 	})
 	if err != nil {

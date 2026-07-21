@@ -186,6 +186,8 @@ func main() {
 		Roles:      roles,
 		Mappings:   mappings,
 		Reader:     stoatClient,
+		Writer:     stoatClient,
+		DryRun:     cfg.DryRun,
 		Logger:     logger,
 	}
 	if err := reconcile.Bind(ctx, reconcileParams); err != nil {
