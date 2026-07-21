@@ -17,6 +17,7 @@ type Writer interface {
 	ChannelWriter
 	CategoryWriter
 	RoleWriter
+	MessageWriter
 }
 
 // RegisterHandlers wires discordgo structure events to engine.Op
@@ -70,6 +71,38 @@ func RegisterHandlers(session *discordgo.Session, guildID, stoatServerID string,
 		}
 		eng.Submit(BuildRoleDeleteOp(e.RoleID, stoatServerID, mappings, writer))
 	})
+
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.MessageCreate) {
+		if e.GuildID != guildID || isSelfAuthored(s, e.Author) {
+			return
+		}
+		if op, ok := BuildMessageOp(engine.OpCreate, s, guildID, e.Message, mappings, writer, logger); ok {
+			eng.Submit(op)
+		}
+	})
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.MessageUpdate) {
+		if e.GuildID != guildID || isSelfAuthored(s, e.Author) {
+			return
+		}
+		if op, ok := BuildMessageOp(engine.OpUpdate, s, guildID, e.Message, mappings, writer, logger); ok {
+			eng.Submit(op)
+		}
+	})
+	session.AddHandler(func(s *discordgo.Session, e *discordgo.MessageDelete) {
+		if e.GuildID != guildID || isSelfAuthored(s, e.Author) {
+			return
+		}
+		eng.Submit(BuildMessageDeleteOp(e.ID, e.ChannelID, mappings, writer))
+	})
+}
+
+// isSelfAuthored reports whether a message event was authored by the bot's
+// own Discord user. Defensive/forward-looking: this bot never posts to
+// Discord today (5.1-5.6 is Discord -> Stoat only), so this cannot currently
+// fire, but Phase 5.7 (Stoat -> Discord) will make the bot post to Discord,
+// and this guard should already exist rather than being retrofitted later.
+func isSelfAuthored(s *discordgo.Session, author *discordgo.User) bool {
+	return s.State.User != nil && author != nil && author.ID == s.State.User.ID
 }
 
 // ConvergeAll submits an update op for every role, channel, and category

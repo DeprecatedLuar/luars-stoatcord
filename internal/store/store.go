@@ -53,6 +53,13 @@ func openWithMigrations(path string, fsys fs.FS, dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: set busy_timeout %s: %w", path, err)
 	}
+	// SQLite ignores FK constraints unless explicitly enabled per connection
+	// -- message_map's NOT NULL FK on channel_map relies on this being on
+	// (see message_test.go's UnknownChannelID test).
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: enable foreign_keys %s: %w", path, err)
+	}
 
 	if err := applyMigrations(db, fsys, dir); err != nil {
 		db.Close()

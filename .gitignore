@@ -74,3 +74,4 @@ doc.md
 !LICENSE
 !shell.nix
 !.gitignore
+spec.md

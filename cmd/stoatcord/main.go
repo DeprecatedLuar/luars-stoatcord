@@ -137,7 +137,7 @@ func main() {
 		logger.Error("discord session construction failed", "error", err)
 		os.Exit(1)
 	}
-	discordSession.Identify.Intents = discordgo.IntentsGuilds
+	discordSession.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
 
 	mappings := mappingStoreAdapter{st}
 	stoatGateway := stoat.NewGateway(logger)

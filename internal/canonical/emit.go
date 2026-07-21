@@ -117,6 +117,48 @@ func (m Message) ToStoat() StoatMessage {
 	}
 }
 
+// messageJSON is Message's deterministic canonical_state shape.
+type messageJSON struct {
+	ID              string   `json:"id"`
+	ChannelID       string   `json:"channel_id"`
+	AuthorName      string   `json:"author_name"`
+	AuthorAvatarRef string   `json:"author_avatar_ref"`
+	AuthorColour    string   `json:"author_colour"`
+	Content         string   `json:"content"`
+	AttachmentRefs  []string `json:"attachment_refs"`
+}
+
+// CanonicalJSON serializes the message for storage in message_map's
+// canonical_state column.
+func (m Message) CanonicalJSON() ([]byte, error) {
+	return json.Marshal(messageJSON{
+		ID:              m.ID,
+		ChannelID:       m.ChannelID,
+		AuthorName:      m.AuthorName,
+		AuthorAvatarRef: m.AuthorAvatarRef,
+		AuthorColour:    m.AuthorColour,
+		Content:         m.Content,
+		AttachmentRefs:  m.AttachmentRefs,
+	})
+}
+
+// ParseMessageCanonicalJSON reverses Message.CanonicalJSON.
+func ParseMessageCanonicalJSON(data []byte) (Message, error) {
+	var mj messageJSON
+	if err := json.Unmarshal(data, &mj); err != nil {
+		return Message{}, err
+	}
+	return Message{
+		ID:              mj.ID,
+		ChannelID:       mj.ChannelID,
+		AuthorName:      mj.AuthorName,
+		AuthorAvatarRef: mj.AuthorAvatarRef,
+		AuthorColour:    mj.AuthorColour,
+		Content:         mj.Content,
+		AttachmentRefs:  mj.AttachmentRefs,
+	}, nil
+}
+
 // categoryJSON is Category's deterministic canonical_state shape.
 // ChannelIDs order is preserved deliberately -- it is the display order
 // (spec 6), not an unordered set.

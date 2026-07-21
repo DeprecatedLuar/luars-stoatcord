@@ -47,6 +47,10 @@ func tableFor(entityType string) (string, error) {
 // Get reads one entity's mapping row, or a zero Mapping{Found: false} if it
 // doesn't exist yet.
 func (s *Store) Get(entityType, discordID string) (Mapping, error) {
+	if entityType == entityTypeMessage {
+		return s.getMessage(discordID)
+	}
+
 	table, err := tableFor(entityType)
 	if err != nil {
 		return Mapping{}, err
@@ -78,6 +82,10 @@ func (s *Store) Get(entityType, discordID string) (Mapping, error) {
 // an update -- preserving its existing stoat_id, so an update's pending
 // window stays recoverable without losing the entity's identity on Stoat.
 func (s *Store) WritePending(entityType, discordID, canonicalState string) error {
+	if entityType == entityTypeMessage {
+		return s.writePendingMessage(discordID, canonicalState)
+	}
+
 	table, err := tableFor(entityType)
 	if err != nil {
 		return err
@@ -101,6 +109,10 @@ func (s *Store) WritePending(entityType, discordID, canonicalState string) error
 // Confirm is the confirm half of the pending-row pattern: the remote call
 // succeeded, so record the returned stoat_id and mark the row active.
 func (s *Store) Confirm(entityType, discordID, stoatID string) error {
+	if entityType == entityTypeMessage {
+		return s.confirmMessage(discordID, stoatID)
+	}
+
 	table, err := tableFor(entityType)
 	if err != nil {
 		return err
@@ -118,6 +130,10 @@ func (s *Store) Confirm(entityType, discordID, stoatID string) error {
 
 // Remove deletes an entity's mapping row entirely, for a confirmed delete.
 func (s *Store) Remove(entityType, discordID string) error {
+	if entityType == entityTypeMessage {
+		return s.removeMessage(discordID)
+	}
+
 	table, err := tableFor(entityType)
 	if err != nil {
 		return err

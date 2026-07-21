@@ -2,6 +2,7 @@ package canonical
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 )
 
@@ -130,6 +131,33 @@ func TestCategory_CanonicalJSON_PreservesChannelOrder(t *testing.T) {
 	const want = `{"id":"cat-1","name":"General","channel_ids":["c3","c1","c2"],"position":2}`
 	if string(got) != want {
 		t.Errorf("CanonicalJSON() = %s, want %s", got, want)
+	}
+}
+
+func TestParseMessageCanonicalJSON_RoundTripsCanonicalJSON(t *testing.T) {
+	m := Message{
+		ID:              "msg-1",
+		ChannelID:       "chan-1",
+		AuthorName:      "Alice",
+		AuthorAvatarRef: "https://cdn.example/avatar.png",
+		AuthorColour:    "#FF00AA",
+		Content:         "hello world",
+		AttachmentRefs:  []string{"att-1", "att-2"},
+	}
+
+	data, err := m.CanonicalJSON()
+	if err != nil {
+		t.Fatalf("CanonicalJSON() error: %v", err)
+	}
+
+	got, err := ParseMessageCanonicalJSON(data)
+	if err != nil {
+		t.Fatalf("ParseMessageCanonicalJSON() error: %v", err)
+	}
+	if got.ID != m.ID || got.ChannelID != m.ChannelID || got.AuthorName != m.AuthorName ||
+		got.AuthorAvatarRef != m.AuthorAvatarRef || got.AuthorColour != m.AuthorColour ||
+		got.Content != m.Content || !reflect.DeepEqual(got.AttachmentRefs, m.AttachmentRefs) {
+		t.Fatalf("got %+v, want %+v", got, m)
 	}
 }
 
