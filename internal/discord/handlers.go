@@ -84,6 +84,7 @@ func RegisterHandlers(session *discordgo.Session, guildID, stoatServerID string,
 		if e.GuildID != guildID || isSelfAuthored(s, e.Author) {
 			return
 		}
+		logGifDetectionMismatch(e.Message, mappings, logger)
 		if op, ok := BuildMessageOp(engine.OpUpdate, s, guildID, e.Message, mappings, writer, logger); ok {
 			eng.Submit(op)
 		}

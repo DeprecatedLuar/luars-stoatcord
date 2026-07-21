@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/luar/stoatcord/internal/canonical"
@@ -78,10 +79,26 @@ func BuildMessageOp(kind engine.OpKind, s *discordgo.Session, guildID string, m 
 		attachmentRefs = append(attachmentRefs, att.URL)
 	}
 
+	// A Discord GIF-picker link (Tenor/Klipy/etc.) is plain content text,
+	// not a real attachment (see gif.go) -- detected and stripped here, at
+	// create time, so it rides the same AttachmentRefs -> UploadFromURL path
+	// as a real attachment instead of mirroring through as a raw link.
+	// Create-only, like every other AttachmentRefs use above: Stoat's edit
+	// endpoint has no attachments field at all, so stripping the link on an
+	// edit would delete it with nothing to replace it -- an edit leaves the
+	// link as plain text instead, same as before this feature existed.
+	content := m.Content
+	if kind == engine.OpCreate {
+		if url, ok := isGifLink(content); ok && len(attachmentRefs) < maxStoatAttachmentsPerMessage {
+			attachmentRefs = append(attachmentRefs, url)
+			content = strings.TrimSpace(strings.Replace(content, url, "", 1))
+		}
+	}
+
 	canonicalMsg := canonical.Message{
 		ID:              m.ID,
 		ChannelID:       m.ChannelID,
-		Content:         m.Content,
+		Content:         content,
 		AuthorName:      authorName,
 		AuthorAvatarRef: authorAvatar,
 		AuthorColour:    authorColour,

@@ -185,6 +185,130 @@ func TestBuildMessageOp_DropsAttachmentsBeyondStoatCap(t *testing.T) {
 	}
 }
 
+func TestBuildMessageOp_GifLinkOnlyContentBecomesAttachment(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "https://tenor.com/view/funny-123",
+		Author: &discordgo.User{ID: "u1", Username: "alice"},
+	}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{sendReturns: "stoat-msg1"}
+	op, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if len(writer.uploadURLs) != 1 || writer.uploadURLs[0] != "https://tenor.com/view/funny-123" {
+		t.Fatalf("uploadURLs = %v, want the gif link uploaded", writer.uploadURLs)
+	}
+	if writer.sendMsg.Content != "" {
+		t.Fatalf("sendMsg.Content = %q, want empty (URL-only content stripped)", writer.sendMsg.Content)
+	}
+	if len(writer.sendMsg.Attachments) != 1 || writer.sendMsg.Attachments[0] != "autumn-https://tenor.com/view/funny-123" {
+		t.Fatalf("sendMsg.Attachments = %v, want the uploaded gif attachment", writer.sendMsg.Attachments)
+	}
+}
+
+func TestBuildMessageOp_GifLinkWithinMixedContentStripsOnlyURL(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "check this out https://tenor.com/view/funny-123",
+		Author: &discordgo.User{ID: "u1", Username: "alice"},
+	}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{sendReturns: "stoat-msg1"}
+	op, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if writer.sendMsg.Content != "check this out" {
+		t.Fatalf("sendMsg.Content = %q, want %q", writer.sendMsg.Content, "check this out")
+	}
+	if len(writer.sendMsg.Attachments) != 1 {
+		t.Fatalf("sendMsg.Attachments = %v, want 1 entry", writer.sendMsg.Attachments)
+	}
+}
+
+func TestBuildMessageOp_NonGifLinkContentUnaffected(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "https://example.com/cat.gif",
+		Author: &discordgo.User{ID: "u1", Username: "alice"},
+	}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{sendReturns: "stoat-msg1"}
+	op, ok := BuildMessageOp(engine.OpCreate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if writer.sendMsg.Content != "https://example.com/cat.gif" {
+		t.Fatalf("sendMsg.Content = %q, want unchanged", writer.sendMsg.Content)
+	}
+	if len(writer.sendMsg.Attachments) != 0 {
+		t.Fatalf("sendMsg.Attachments = %v, want none (unlisted host is not detected)", writer.sendMsg.Attachments)
+	}
+}
+
+func TestBuildMessageOp_EditWithGifLinkLeavesContentUntouched(t *testing.T) {
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+	session := &discordgo.Session{State: discordgo.NewState()}
+	m := &discordgo.Message{
+		ID: "msg1", ChannelID: "chan1", Content: "https://tenor.com/view/funny-123",
+		Author: &discordgo.User{ID: "u1", Username: "alice"},
+	}
+
+	mappings := newFakeMappingReader()
+	mappings.set(string(engine.EntityChannel), "chan1", engine.Mapping{Found: true, StoatID: "stoat-chan1", Status: engine.StatusActive})
+	mappings.set(string(engine.EntityMessage), "msg1", engine.Mapping{Found: true, StoatID: "stoat-msg1", Status: engine.StatusActive})
+
+	writer := &fakeMessageWriter{}
+	op, ok := BuildMessageOp(engine.OpUpdate, session, "guild1", m, mappings, writer, logger)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+
+	if _, err := op.Apply(context.Background()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if writer.editContent != "https://tenor.com/view/funny-123" {
+		t.Fatalf("editContent = %q, want the link left intact (edit cannot attach)", writer.editContent)
+	}
+	if len(writer.uploadURLs) != 0 {
+		t.Fatalf("uploadURLs = %v, want none (edit path never uploads)", writer.uploadURLs)
+	}
+}
+
 func TestBuildMessageOp_SetsChannelIDAndDependsOn(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
