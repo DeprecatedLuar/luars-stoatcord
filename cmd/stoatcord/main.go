@@ -29,10 +29,19 @@ const (
 	lockFileName   = "stoatcord.lock"
 	logFileName    = "stoatcord.log"
 
-	// stoatMinRemoteInterval is the floor spacing between Stoat remote
-	// calls (engine.GlobalRateLimiter). Not a spec-known constant -- Phase 0
-	// didn't observe Stoat's exact rate limit -- so it is conservative.
-	stoatMinRemoteInterval = 250 * time.Millisecond
+	// Per-bucket floor spacing between Stoat remote calls
+	// (engine.BucketedRateLimiter), source-ground-truthed from Stoat's own
+	// rate limiter (crates/core/ratelimits/src/ratelimiter.rs,
+	// crates/delta/src/util/ratelimits.rs): each bucket allows N requests
+	// per fixed 10s window, keyed by (bucket, resource). Min-interval
+	// spacing of 10s/N is a strict, provably-safe approximation of that
+	// fixed window; the limiter's existing Backoff (honoring a real
+	// Retry-After) is the backstop for clock skew and live+reconcile
+	// overlap on the same bucket.
+	stoatServersInterval   = 2 * time.Second        // "servers" bucket: 5/10s -- role/category/server metadata writes, one shared bucket for the whole mirror server
+	stoatChannelsInterval  = 700 * time.Millisecond // "channels" bucket: 15/10s -- channel structure writes, independent per channel id
+	stoatMessagingInterval = 1 * time.Second        // "messaging" bucket: 10/10s -- message sends, independent per channel id
+	stoatDefaultInterval   = 500 * time.Millisecond // "any" bucket (fallback): 20/10s
 
 	// shutdownDrainTimeout bounds how long shutdown waits for in-flight
 	// engine ops to finish. An op permanently deferred on a dependency that
@@ -136,7 +145,11 @@ func main() {
 		discordReady: func() bool { return discordSession.DataReady },
 		stoatHealthy: stoatGateway.Healthy,
 	}
-	limiter := engine.NewGlobalRateLimiter(stoatMinRemoteInterval)
+	limiter := engine.NewBucketedRateLimiter(map[string]time.Duration{
+		"servers":   stoatServersInterval,
+		"channels":  stoatChannelsInterval,
+		"messaging": stoatMessagingInterval,
+	}, stoatDefaultInterval)
 	eng := engine.New(mappings, health, st, limiter, logger)
 	eng.DryRun = cfg.DryRun
 

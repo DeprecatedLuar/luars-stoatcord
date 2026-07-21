@@ -92,8 +92,8 @@ func (f *fakeQueueStore) Enqueue(opType, payload string) error {
 // under test.
 type fakeRateLimiter struct{}
 
-func (fakeRateLimiter) Wait(ctx context.Context) error    { return nil }
-func (fakeRateLimiter) Backoff(retryAfterSeconds float64) {}
+func (fakeRateLimiter) Wait(ctx context.Context, bucketKey string) error    { return nil }
+func (fakeRateLimiter) Backoff(bucketKey string, retryAfterSeconds float64) {}
 
 func newTestEngine(mappings MappingStore, health HealthChecker, queue QueueStore) *Engine {
 	return New(mappings, health, queue, fakeRateLimiter{}, nil)
@@ -448,12 +448,12 @@ type recordingRateLimiter struct {
 	backoffCalls []float64
 }
 
-func (r *recordingRateLimiter) Wait(ctx context.Context) error {
+func (r *recordingRateLimiter) Wait(ctx context.Context, bucketKey string) error {
 	r.waitCalls++
 	return nil
 }
 
-func (r *recordingRateLimiter) Backoff(retryAfterSeconds float64) {
+func (r *recordingRateLimiter) Backoff(bucketKey string, retryAfterSeconds float64) {
 	r.backoffCalls = append(r.backoffCalls, retryAfterSeconds)
 }
 

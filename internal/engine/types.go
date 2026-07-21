@@ -85,9 +85,10 @@ type QueueStore interface {
 	Enqueue(opType, payload string) error
 }
 
-// RateLimiter is the single global write throttle shared by every worker
-// (the Stoat API limit is global, not per-channel).
+// RateLimiter throttles remote writes per Stoat rate-limit bucket (spec:
+// Stoat limits per (bucket, resource), not globally -- see bucketKey).
+// bucketKey identifies which bucket's sub-limiter to wait on or back off.
 type RateLimiter interface {
-	Wait(ctx context.Context) error
-	Backoff(retryAfterSeconds float64)
+	Wait(ctx context.Context, bucketKey string) error
+	Backoff(bucketKey string, retryAfterSeconds float64)
 }
